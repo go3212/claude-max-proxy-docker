@@ -17,8 +17,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.25",
-    "glob": "^13.0.0",
     "hono": "^4.11.4"
   },
   "devDependencies": {
@@ -29,8 +27,7 @@
   "files": [
     "bin/",
     "src/proxy/",
-    "src/logger.ts",
-    "README.md"
+    "src/logger.ts"
   ],
   "keywords": [
     "opencode",

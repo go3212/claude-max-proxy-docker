@@ -4,63 +4,44 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/rynfar/opencode-claude-max-proxy.svg)](https://github.com/rynfar/opencode-claude-max-proxy/stargazers)
 
-Use your **Claude Max subscription** with OpenCode.
+Use your **Claude Max subscription** with OpenCode — with **full API feature support**.
 
 ## The Problem
 
 Anthropic doesn't allow Claude Max subscribers to use their subscription with third-party tools like OpenCode. If you want to use Claude in OpenCode, you have to pay for API access separately - even though you're already paying for "unlimited" Claude.
 
-Your options are:
-1. Use Claude's official apps only (limited to their UI)
-2. Pay again for API access on top of your Max subscription
-3. **Use this proxy**
-
 ## The Solution
 
-This proxy bridges the gap using Anthropic's own tools:
+This proxy transparently forwards Anthropic API requests using your Claude Max OAuth tokens:
 
 ```
-OpenCode → Proxy (localhost:3456) → Claude Agent SDK → Your Claude Max Subscription
+OpenCode → Proxy (localhost:3456) → api.anthropic.com → Your Claude Max Subscription
 ```
 
-The [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) is Anthropic's **official npm package** that lets developers build with Claude using their Max subscription. This proxy simply translates OpenCode's API requests into SDK calls.
+Requests are passed through **as-is** — no transformation, no message flattening. This means every Anthropic API feature works automatically.
 
-**Your Max subscription. Anthropic's official SDK. Zero additional cost.**
-
-## Is This Allowed?
-
-**Yes.** Here's why:
-
-| Concern | Reality |
-|---------|---------|
-| "Bypassing restrictions" | No. We use Anthropic's public SDK exactly as documented |
-| "Violating TOS" | No. The SDK is designed for programmatic Claude access |
-| "Unauthorized access" | No. You authenticate with `claude login` using your own account |
-| "Reverse engineering" | No. We call `query()` from their npm package, that's it |
-
-The Claude Agent SDK exists specifically to let Max subscribers use Claude programmatically. We're just translating the request format so OpenCode can use it.
-
-**~200 lines of TypeScript. No hacks. No magic. Just format translation.**
+**Your Max subscription. Direct API passthrough. Zero additional cost.**
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Zero API costs** | Uses your Claude Max subscription, not per-token billing |
-| **Full compatibility** | Works with any Anthropic model in OpenCode |
-| **Streaming support** | Real-time SSE streaming just like the real API |
-| **Auto-start** | Optional launchd service for macOS |
-| **Simple setup** | Two commands to get running |
+| **Zero API costs** | Uses your Claude Max subscription |
+| **Full API support** | Prompt caching, extended thinking, vision, tool use, PDFs, structured outputs |
+| **Streaming** | Native SSE streaming passthrough |
+| **Auto token refresh** | OAuth tokens are refreshed automatically when expired |
+| **Future-proof** | New API features work immediately — nothing to update |
 
 ## Prerequisites
 
 1. **Claude Max subscription** - [Subscribe here](https://claude.ai/settings/subscription)
 
-2. **Claude CLI** installed and authenticated:
+2. **Claude CLI** authenticated (one-time setup):
    ```bash
    npm install -g @anthropic-ai/claude-code
    claude login
    ```
+   You only need to run `claude login` once. The proxy reads the saved credentials directly — Claude CLI doesn't need to stay installed.
 
 3. **Bun** runtime:
    ```bash
@@ -95,6 +76,13 @@ Select any `anthropic/claude-*` model (opus, sonnet, haiku).
 
 ```bash
 bun run proxy & ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
+```
+
+## Docker
+
+```bash
+docker build -t claude-max-proxy .
+docker run -p 3456:3456 -v ~/.claude:/root/.claude:ro claude-max-proxy
 ```
 
 ## Auto-start on macOS
@@ -137,14 +125,6 @@ source ~/.zshrc
 
 Now just run `oc` to start OpenCode with Claude Max.
 
-## Model Mapping
-
-| OpenCode Model | Claude SDK |
-|----------------|------------|
-| `anthropic/claude-opus-*` | opus |
-| `anthropic/claude-sonnet-*` | sonnet |
-| `anthropic/claude-haiku-*` | haiku |
-
 ## Configuration
 
 | Environment Variable | Default | Description |
@@ -154,21 +134,19 @@ Now just run `oc` to start OpenCode with Claude Max.
 
 ## How It Works
 
-1. **OpenCode** sends a request to `http://127.0.0.1:3456/messages` (thinking it's the Anthropic API)
-2. **Proxy** receives the request and extracts the messages
-3. **Proxy** calls `query()` from the Claude Agent SDK with your prompt
-4. **Claude Agent SDK** authenticates using your Claude CLI login (tied to your Max subscription)
-5. **Claude** processes the request using your subscription
-6. **Proxy** streams the response back in Anthropic SSE format
-7. **OpenCode** receives the response as if it came from the real API
+1. **OpenCode** sends a request to `http://127.0.0.1:3456/v1/messages`
+2. **Proxy** reads your OAuth token from `~/.claude/.credentials.json`
+3. **Proxy** forwards the request as-is to `api.anthropic.com` with your token
+4. **Anthropic** processes the request using your Max subscription
+5. **Proxy** pipes the response directly back to OpenCode
 
-The proxy is ~200 lines of TypeScript. No magic, no hacks.
+The proxy is ~80 lines of TypeScript. No message transformation, no SDK dependency, just transparent forwarding.
 
 ## FAQ
 
 ### Why do I need `ANTHROPIC_API_KEY=dummy`?
 
-OpenCode requires an API key to be set, but we never actually use it. The Claude Agent SDK handles authentication through your Claude CLI login. Any non-empty string works.
+OpenCode requires an API key to be set, but the proxy ignores it. Authentication is handled via your Claude CLI OAuth tokens. Any non-empty string works.
 
 ### Does this work with other tools besides OpenCode?
 
@@ -180,26 +158,26 @@ Your Claude Max subscription has its own usage limits. This proxy doesn't add an
 
 ### Is my data sent anywhere else?
 
-No. The proxy runs locally on your machine. Your requests go directly to Claude through the official SDK.
+No. The proxy runs locally and forwards requests directly to `api.anthropic.com`.
+
+### Do I need Claude CLI installed?
+
+Only for the initial `claude login` to create the credentials file. After that, the proxy reads credentials directly — you can uninstall Claude CLI if you want.
 
 ## Troubleshooting
 
-### "Authentication failed"
+### "Failed to load credentials"
 
 Run `claude login` to authenticate with the Claude CLI.
+
+### "Token refresh failed"
+
+Your refresh token may have expired. Run `claude login` again.
 
 ### "Connection refused"
 
 Make sure the proxy is running: `bun run proxy`
 
-### Proxy keeps dying
-
-Use the launchd service (see Auto-start section) which automatically restarts the proxy.
-
 ## License
 
 MIT
-
-## Credits
-
-Built with the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) by Anthropic.

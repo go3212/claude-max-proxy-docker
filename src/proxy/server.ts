@@ -1,61 +1,79 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { query } from "@anthropic-ai/claude-agent-sdk"
 import type { Context } from "hono"
-import type { ProxyConfig } from "./types"
+import type { ProxyConfig, ClaudeCredentials } from "./types"
 import { DEFAULT_PROXY_CONFIG } from "./types"
 import { claudeLog } from "../logger"
-import { execSync } from "child_process"
-import { existsSync } from "fs"
-import { fileURLToPath } from "url"
-import { join, dirname } from "path"
-import { opencodeMcpServer } from "../mcpTools"
+import { readFileSync } from "fs"
+import { join } from "path"
+import { homedir } from "os"
 
-const BLOCKED_BUILTIN_TOOLS = [
-  "Read", "Write", "Edit", "MultiEdit",
-  "Bash", "Glob", "Grep", "NotebookEdit",
-  "WebFetch", "WebSearch", "TodoWrite"
-]
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+const TOKEN_REFRESH_URL = "https://platform.claude.com/v1/oauth/token"
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+const OAUTH_SCOPES = "user:profile user:inference user:sessions:claude_code user:mcp_servers"
+const CREDENTIALS_PATH = join(homedir(), ".claude", ".credentials.json")
 
-const MCP_SERVER_NAME = "opencode"
+let credentials: ClaudeCredentials
 
-const ALLOWED_MCP_TOOLS = [
-  `mcp__${MCP_SERVER_NAME}__read`,
-  `mcp__${MCP_SERVER_NAME}__write`,
-  `mcp__${MCP_SERVER_NAME}__edit`,
-  `mcp__${MCP_SERVER_NAME}__bash`,
-  `mcp__${MCP_SERVER_NAME}__glob`,
-  `mcp__${MCP_SERVER_NAME}__grep`
-]
-
-function resolveClaudeExecutable(): string {
-  // 1. Try the SDK's bundled cli.js (same dir as this module's SDK)
+function loadCredentials(): ClaudeCredentials {
   try {
-    const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"))
-    const sdkCliJs = join(dirname(sdkPath), "cli.js")
-    if (existsSync(sdkCliJs)) return sdkCliJs
-  } catch {}
-
-  // 2. Try the system-installed claude binary
-  try {
-    const claudePath = execSync("which claude", { encoding: "utf-8" }).trim()
-    if (claudePath && existsSync(claudePath)) return claudePath
-  } catch {}
-
-  throw new Error("Could not find Claude Code executable. Install via: npm install -g @anthropic-ai/claude-code")
+    const raw = readFileSync(CREDENTIALS_PATH, "utf-8")
+    return JSON.parse(raw)
+  } catch (error) {
+    throw new Error(
+      `Failed to load credentials from ${CREDENTIALS_PATH}. Run 'claude login' first.\n` +
+      (error instanceof Error ? error.message : String(error))
+    )
+  }
 }
 
-const claudeExecutable = resolveClaudeExecutable()
+async function refreshToken(): Promise<void> {
+  claudeLog("auth.refreshing")
+  const res = await fetch(TOKEN_REFRESH_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: credentials.claudeAiOauth.refreshToken,
+      client_id: OAUTH_CLIENT_ID,
+      scope: OAUTH_SCOPES
+    })
+  })
 
-function mapModelToClaudeModel(model: string): "sonnet" | "opus" | "haiku" {
-  if (model.includes("opus")) return "opus"
-  if (model.includes("haiku")) return "haiku"
-  return "sonnet"
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Token refresh failed (${res.status}): ${body}`)
+  }
+
+  const data = await res.json() as {
+    access_token: string
+    refresh_token: string
+    expires_in: number
+  }
+
+  credentials.claudeAiOauth.accessToken = data.access_token
+  credentials.claudeAiOauth.refreshToken = data.refresh_token
+  credentials.claudeAiOauth.expiresAt = Date.now() + data.expires_in * 1000
+  claudeLog("auth.refreshed", { expiresAt: credentials.claudeAiOauth.expiresAt })
+}
+
+async function ensureValidToken(): Promise<string> {
+  if (Date.now() >= credentials.claudeAiOauth.expiresAt - 60_000) {
+    await refreshToken()
+  }
+  return credentials.claudeAiOauth.accessToken
 }
 
 export function createProxyServer(config: Partial<ProxyConfig> = {}) {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
   const app = new Hono()
+
+  credentials = loadCredentials()
+  claudeLog("auth.loaded", {
+    subscriptionType: credentials.claudeAiOauth.subscriptionType,
+    expiresAt: credentials.claudeAiOauth.expiresAt
+  })
 
   app.use("*", cors())
 
@@ -63,185 +81,50 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
     return c.json({
       status: "ok",
       service: "claude-max-proxy",
-      version: "1.0.0",
-      format: "anthropic",
+      version: "2.0.0",
+      mode: "passthrough",
       endpoints: ["/v1/messages", "/messages"]
     })
   })
 
   const handleMessages = async (c: Context) => {
     try {
-      const body = await c.req.json()
-      const model = mapModelToClaudeModel(body.model || "sonnet")
-      const stream = body.stream ?? true
+      const token = await ensureValidToken()
+      const body = await c.req.text()
 
-      claudeLog("proxy.anthropic.request", { model, stream, messageCount: body.messages?.length })
-
-      // Build system context from the request's system prompt
-      let systemContext = ""
-      if (body.system) {
-        if (typeof body.system === "string") {
-          systemContext = body.system
-        } else if (Array.isArray(body.system)) {
-          systemContext = body.system
-            .filter((b: any) => b.type === "text" && b.text)
-            .map((b: any) => b.text)
-            .join("\n")
-        }
-      }
-
-      // Convert messages to a text prompt
-      const conversationParts = body.messages
-        ?.map((m: { role: string; content: string | Array<{ type: string; text?: string }> }) => {
-          const role = m.role === "assistant" ? "Assistant" : "Human"
-          let content: string
-          if (typeof m.content === "string") {
-            content = m.content
-          } else if (Array.isArray(m.content)) {
-            content = m.content
-              .filter((block: any) => block.type === "text" && block.text)
-              .map((block: any) => block.text)
-              .join("")
-          } else {
-            content = String(m.content)
-          }
-          return `${role}: ${content}`
-        })
-        .join("\n\n") || ""
-
-      // Combine system context with conversation
-      const prompt = systemContext
-        ? `${systemContext}\n\n${conversationParts}`
-        : conversationParts
-
-      if (!stream) {
-        let fullContent = ""
-        const response = query({
-          prompt,
-          options: {
-            maxTurns: 100,
-            model,
-            pathToClaudeCodeExecutable: claudeExecutable,
-            disallowedTools: [...BLOCKED_BUILTIN_TOOLS],
-            allowedTools: [...ALLOWED_MCP_TOOLS],
-            mcpServers: {
-              [MCP_SERVER_NAME]: opencodeMcpServer
-            }
-          }
-        })
-
-        for await (const message of response) {
-          if (message.type === "assistant") {
-            for (const block of message.message.content) {
-              if (block.type === "text") {
-                fullContent += block.text
-              }
-            }
-          }
-        }
-
-        // If no text content was produced (e.g. only tool_use), return a fallback
-        if (!fullContent) {
-          fullContent = "I can help with that. Could you provide more details about what you'd like me to do?"
-        }
-
-        return c.json({
-          id: `msg_${Date.now()}`,
-          type: "message",
-          role: "assistant",
-          content: [{ type: "text", text: fullContent }],
-          model: body.model,
-          stop_reason: "end_turn",
-          usage: { input_tokens: 0, output_tokens: 0 }
-        })
-      }
-
-      const encoder = new TextEncoder()
-      const readable = new ReadableStream({
-        async start(controller) {
-          try {
-            const response = query({
-              prompt,
-              options: {
-                maxTurns: 100,
-                model,
-                pathToClaudeCodeExecutable: claudeExecutable,
-                includePartialMessages: true,
-                disallowedTools: [...BLOCKED_BUILTIN_TOOLS],
-                allowedTools: [...ALLOWED_MCP_TOOLS],
-                mcpServers: {
-                  [MCP_SERVER_NAME]: opencodeMcpServer
-                }
-              }
-            })
-
-            const heartbeat = setInterval(() => {
-              try {
-                controller.enqueue(encoder.encode(`: ping\n\n`))
-              } catch {
-                clearInterval(heartbeat)
-              }
-            }, 15_000)
-
-            const skipBlockIndices = new Set<number>()
-
-            try {
-              for await (const message of response) {
-                if (message.type === "stream_event") {
-                  const event = message.event
-                  const eventType = event.type
-                  const eventIndex = (event as any).index as number | undefined
-
-                  // Filter out tool_use content blocks — OpenCode expects text only
-                  if (eventType === "content_block_start") {
-                    const block = (event as any).content_block
-                    if (block?.type === "tool_use") {
-                      if (eventIndex !== undefined) skipBlockIndices.add(eventIndex)
-                      continue
-                    }
-                  }
-
-                  // Skip deltas and stops for tool_use blocks
-                  if (eventIndex !== undefined && skipBlockIndices.has(eventIndex)) {
-                    continue
-                  }
-
-                  // Override message_delta to always show end_turn
-                  if (eventType === "message_delta") {
-                    const patched = {
-                      ...event,
-                      delta: { ...((event as any).delta || {}), stop_reason: "end_turn" },
-                      usage: (event as any).usage || { output_tokens: 0 }
-                    }
-                    controller.enqueue(encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(patched)}\n\n`))
-                    continue
-                  }
-
-                  // Forward all other events (message_start, text deltas, content_block_start/stop for text, message_stop)
-                  controller.enqueue(encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(event)}\n\n`))
-                }
-              }
-            } finally {
-              clearInterval(heartbeat)
-            }
-
-            controller.close()
-          } catch (error) {
-            claudeLog("proxy.anthropic.error", { error: error instanceof Error ? error.message : String(error) })
-            controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({
-              type: "error",
-              error: { type: "api_error", message: error instanceof Error ? error.message : "Unknown error" }
-            })}\n\n`))
-            controller.close()
-          }
-        }
+      claudeLog("proxy.request", {
+        contentLength: body.length,
+        hasStream: body.includes('"stream"')
       })
 
-      return new Response(readable, {
+      const headers: Record<string, string> = {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01"
+      }
+
+      // Forward anthropic-beta header if present
+      const betaHeader = c.req.header("anthropic-beta")
+      if (betaHeader) {
+        headers["anthropic-beta"] = betaHeader
+      }
+
+      const upstream = await fetch(ANTHROPIC_API_URL, {
+        method: "POST",
+        headers,
+        body
+      })
+
+      claudeLog("proxy.response", { status: upstream.status })
+
+      // Pipe the response directly back
+      return new Response(upstream.body, {
+        status: upstream.status,
         headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive"
+          "Content-Type": upstream.headers.get("Content-Type") || "application/json",
+          ...(upstream.headers.get("Cache-Control") && {
+            "Cache-Control": upstream.headers.get("Cache-Control")!
+          })
         }
       })
     } catch (error) {
@@ -271,8 +154,9 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}) {
     fetch: app.fetch
   })
 
-  console.log(`Claude Max Proxy (Anthropic API) running at http://${finalConfig.host}:${finalConfig.port}`)
-  console.log(`\nTo use with OpenCode, run:`)
+  console.log(`Claude Max Proxy (passthrough) running at http://${finalConfig.host}:${finalConfig.port}`)
+  console.log(`Supports: prompt caching, extended thinking, vision, tool use, PDFs, streaming`)
+  console.log(`\nTo use with OpenCode:`)
   console.log(`  ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://${finalConfig.host}:${finalConfig.port} opencode`)
 
   return server
