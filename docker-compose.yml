@@ -1,0 +1,14 @@
+services:
+  claude-proxy:
+    build: .
+    ports:
+      - "3456:3456"
+    environment:
+      - CLAUDE_PROXY_HOST=0.0.0.0
+      - CLAUDE_PROXY_PORT=3456
+    volumes:
+      - claude-credentials:/root/.claude
+    restart: unless-stopped
+
+volumes:
+  claude-credentials:
