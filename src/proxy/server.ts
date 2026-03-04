@@ -100,7 +100,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
       const headers: Record<string, string> = {
         "Authorization": `Bearer ${token}`,
         "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01"
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "User-Agent": "claude-cli/2.1.68"
       }
 
       // Forward anthropic-beta header if present
