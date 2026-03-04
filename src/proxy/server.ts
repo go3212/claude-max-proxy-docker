@@ -105,11 +105,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         "User-Agent": "claude-cli/2.1.68"
       }
 
-      // Forward anthropic-beta header if present
+      // Merge anthropic-beta headers: always include oauth, plus any from client
       const betaHeader = c.req.header("anthropic-beta")
+      const betaValues = new Set(["oauth-2025-04-20"])
       if (betaHeader) {
-        headers["anthropic-beta"] = betaHeader
+        for (const v of betaHeader.split(",")) {
+          betaValues.add(v.trim())
+        }
       }
+      headers["anthropic-beta"] = [...betaValues].join(",")
 
       const upstream = await fetch(ANTHROPIC_API_URL, {
         method: "POST",
