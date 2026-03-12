@@ -18,8 +18,11 @@ COPY bin/ ./bin/
 COPY src/ ./src/
 COPY tsconfig.json ./
 
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
+
 EXPOSE 3456
 
 ENV CLAUDE_PROXY_HOST=0.0.0.0
 
-ENTRYPOINT ["bun", "run", "./bin/claude-proxy.ts"]
+ENTRYPOINT ["./entrypoint.sh"]
