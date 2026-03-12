@@ -7,8 +7,8 @@ services:
       - CLAUDE_PROXY_HOST=0.0.0.0
       - CLAUDE_PROXY_PORT=3456
     volumes:
-      - claude-credentials:/root/.claude
+      - claude-data:/root/.claude
     restart: unless-stopped
 
 volumes:
-  claude-credentials:
+  claude-data:
