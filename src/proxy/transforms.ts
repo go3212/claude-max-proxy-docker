@@ -1,5 +1,15 @@
 import { getModelOverride } from "./model-config"
 import { buildBillingHeaderValue } from "./signing"
+import {
+  cloneOfficialClaudeBodyTemplate,
+  getOfficialToolTemplateMap,
+  type OfficialClaudeScaffold
+} from "./official-scaffold"
+import {
+  applyRequestToolBridge,
+  type ToolBridgeResult,
+  type UnsupportedToolMode
+} from "./tool-bridge"
 
 const BILLING_PREFIX = "x-anthropic-billing-header"
 
@@ -30,6 +40,11 @@ export interface AnthropicRequestBody extends Record<string, unknown> {
   thinking?: Record<string, unknown>
   output_config?: Record<string, unknown>
   messages?: AnthropicMessage[]
+  tools?: unknown[]
+  tool_choice?: Record<string, unknown>
+  context_management?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+  max_tokens?: number
   temperature?: number
   stream?: boolean
 }
@@ -37,6 +52,9 @@ export interface AnthropicRequestBody extends Record<string, unknown> {
 export interface TransformOptions {
   version: string
   entrypoint: string
+  scaffold: OfficialClaudeScaffold
+  unsupportedToolMode?: UnsupportedToolMode
+  metadataUserId?: string | null
 }
 
 export interface TransformSummary {
@@ -53,6 +71,7 @@ export interface TransformResult {
   stream: boolean
   transformed: boolean
   summary: TransformSummary
+  toolBridge: ToolBridgeResult
 }
 
 const EMPTY_SUMMARY: TransformSummary = {
@@ -63,9 +82,15 @@ const EMPTY_SUMMARY: TransformSummary = {
   textSystemReducedToCoreOnly: false
 }
 
-function entryText(entry: SystemEntry | string): string {
-  if (typeof entry === "string") return entry
-  return typeof entry.text === "string" ? entry.text : ""
+const EMPTY_TOOL_BRIDGE: ToolBridgeResult = {
+  mappedToolNames: [],
+  officialToOpenNames: {},
+  unsupportedToolNames: [],
+  hasTools: false
+}
+
+function cloneValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
 }
 
 function normalizeSystemEntries(
@@ -76,7 +101,7 @@ function normalizeSystemEntries(
   }
 
   if (Array.isArray(system)) {
-    return [...system]
+    return cloneValue(system)
   }
 
   return []
@@ -171,112 +196,200 @@ function summarizeTransformedBody(
   firstUserSummary: Pick<TransformSummary, "hadFirstUserMessage" | "hadFirstUserTextBlock">
 ): TransformSummary {
   const systemEntries = normalizeSystemEntries(body.system)
-  const textEntries = systemEntries.filter((entry) => {
+  const finalSystemTextCount = systemEntries.filter((entry) => {
     if (typeof entry === "string") return entry.length > 0
     return entry.type === "text" && typeof entry.text === "string" && entry.text.length > 0
-  })
+  }).length
 
   return {
     movedSystemTextCount,
     hadFirstUserMessage: firstUserSummary.hadFirstUserMessage,
     hadFirstUserTextBlock: firstUserSummary.hadFirstUserTextBlock,
-    finalSystemTextCount: textEntries.length,
-    textSystemReducedToCoreOnly: textEntries.every((entry) => {
-      const text = entryText(entry)
-      return text.startsWith(BILLING_PREFIX) || text === SYSTEM_IDENTITY
+    finalSystemTextCount,
+    textSystemReducedToCoreOnly: movedSystemTextCount >= 0
+  }
+}
+
+function extractIncomingSystem(
+  system: AnthropicRequestBody["system"],
+  scaffold: OfficialClaudeScaffold
+): {
+  movedTexts: string[]
+  preservedEntries: Array<SystemEntry | string>
+} {
+  const movedTexts: string[] = []
+  const preservedEntries: Array<SystemEntry | string> = []
+  const scaffoldTextEntries = new Set(
+    normalizeSystemEntries(scaffold.bodyTemplate.system)
+      .map((entry) => typeof entry === "string" ? entry : entry.text ?? "")
+      .filter((text) => text && !text.startsWith(BILLING_PREFIX))
+  )
+
+  for (const entry of normalizeSystemEntries(system)) {
+    if (typeof entry === "string") {
+      if (entry.startsWith(SYSTEM_IDENTITY)) {
+        const remainder = entry.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
+        if (remainder && !scaffoldTextEntries.has(remainder)) {
+          movedTexts.push(remainder)
+        }
+        continue
+      }
+      if (scaffoldTextEntries.has(entry)) {
+        continue
+      }
+      if (entry && !entry.startsWith(BILLING_PREFIX)) {
+        movedTexts.push(entry)
+      }
+      continue
+    }
+
+    if (entry.type !== "text") {
+      preservedEntries.push(entry)
+      continue
+    }
+
+    const text = entry.text ?? ""
+    if (text.startsWith(SYSTEM_IDENTITY)) {
+      const remainder = text.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
+      if (remainder && !scaffoldTextEntries.has(remainder)) {
+        movedTexts.push(remainder)
+      }
+      continue
+    }
+    if (text && scaffoldTextEntries.has(text)) {
+      continue
+    }
+    if (text && !text.startsWith(BILLING_PREFIX)) {
+      movedTexts.push(text)
+    }
+  }
+
+  return {
+    movedTexts,
+    preservedEntries
+  }
+}
+
+function buildScaffoldSystem(
+  scaffold: OfficialClaudeScaffold,
+  billingText: string,
+  preservedIncomingEntries: Array<SystemEntry | string>
+): Array<SystemEntry | string> {
+  const scaffoldSystem = normalizeSystemEntries(scaffold.bodyTemplate.system)
+    .filter((entry) => {
+      const text = typeof entry === "string" ? entry : entry.text ?? ""
+      return !text.startsWith(BILLING_PREFIX)
     })
+
+  return [
+    {
+      type: "text",
+      text: billingText
+    },
+    ...scaffoldSystem,
+    ...preservedIncomingEntries
+  ]
+}
+
+function applyMetadata(
+  outgoing: AnthropicRequestBody,
+  scaffold: OfficialClaudeScaffold,
+  metadataUserId: string | null | undefined
+): void {
+  if (!outgoing.metadata && scaffold.bodyTemplate.metadata) {
+    outgoing.metadata = cloneValue(scaffold.bodyTemplate.metadata)
+  }
+
+  if (!outgoing.metadata || typeof outgoing.metadata !== "object") {
+    if (!metadataUserId) return
+    outgoing.metadata = {}
+  }
+
+  if (metadataUserId) {
+    outgoing.metadata = {
+      ...(outgoing.metadata as Record<string, unknown>),
+      user_id: metadataUserId
+    }
   }
 }
 
 export function applyClaudeCodeRequestTransforms(
   parsed: AnthropicRequestBody,
   options: TransformOptions
-): AnthropicRequestBody {
-  const messages = Array.isArray(parsed.messages) ? parsed.messages : []
-  if (messages.length === 0) {
+): AnthropicRequestBody & { __transformSummary__?: TransformSummary; __toolBridge__?: ToolBridgeResult } {
+  const unsupportedToolMode = options.unsupportedToolMode ?? "keep"
+  const outgoing = cloneOfficialClaudeBodyTemplate(options.scaffold)
+
+  outgoing.model = parsed.model ?? outgoing.model
+  outgoing.max_tokens = parsed.max_tokens ?? outgoing.max_tokens
+  outgoing.stream = parsed.stream ?? outgoing.stream ?? false
+  outgoing.thinking = parsed.thinking ? cloneValue(parsed.thinking) : outgoing.thinking
+  outgoing.output_config = parsed.output_config ? cloneValue(parsed.output_config) : outgoing.output_config
+  outgoing.tool_choice = parsed.tool_choice ? cloneValue(parsed.tool_choice) : outgoing.tool_choice
+  outgoing.messages = Array.isArray(parsed.messages) ? cloneValue(parsed.messages) : []
+  outgoing.tools = Array.isArray(parsed.tools) ? cloneValue(parsed.tools) : []
+
+  if (outgoing.messages.length === 0) {
     stripAdaptiveTemperature(parsed)
-    return parsed
+    Object.assign(outgoing, parsed)
+    ;(outgoing as AnthropicRequestBody & { __transformSummary__?: TransformSummary }).__transformSummary__ = EMPTY_SUMMARY
+    ;(outgoing as AnthropicRequestBody & { __toolBridge__?: ToolBridgeResult }).__toolBridge__ = EMPTY_TOOL_BRIDGE
+    return outgoing as AnthropicRequestBody & { __transformSummary__?: TransformSummary; __toolBridge__?: ToolBridgeResult }
   }
 
-  const rawSystem = normalizeSystemEntries(parsed.system)
-  const billingEntry: SystemEntry = {
-    type: "text",
-    text: buildBillingHeaderValue(messages, options.version, options.entrypoint)
+  const toolBridge = applyRequestToolBridge(
+    outgoing as Record<string, unknown>,
+    getOfficialToolTemplateMap(options.scaffold),
+    unsupportedToolMode
+  )
+
+  if (!toolBridge.hasTools) {
+    delete outgoing.tools
+    delete outgoing.tool_choice
+  } else if (Array.isArray(parsed.tools)) {
+    outgoing.tools = (outgoing.tools ?? []) as unknown[]
   }
 
-  const keptSystem: Array<SystemEntry | string> = []
-  const movedTexts: string[] = []
-  let identitySeen = false
-
-  for (const entry of rawSystem) {
-    if (typeof entry === "string") {
-      if (entry.startsWith(BILLING_PREFIX)) continue
-      if (entry.startsWith(SYSTEM_IDENTITY)) {
-        if (identitySeen) continue
-        identitySeen = true
-        keptSystem.push(SYSTEM_IDENTITY)
-        const rest = entry.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
-        if (rest) movedTexts.push(rest)
-        continue
-      }
-      if (entry) movedTexts.push(entry)
-      continue
-    }
-
-    if (entry.type !== "text") {
-      keptSystem.push(entry)
-      continue
-    }
-
-    const text = entry.text ?? ""
-    if (text.startsWith(BILLING_PREFIX)) {
-      continue
-    }
-
-    if (text.startsWith(SYSTEM_IDENTITY)) {
-      if (identitySeen) continue
-      identitySeen = true
-      const identityEntry: SystemEntry = { ...entry, text: SYSTEM_IDENTITY }
-      keptSystem.push(identityEntry)
-      const rest = text.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
-      if (rest) movedTexts.push(rest)
-      continue
-    }
-
-    if (text) {
-      movedTexts.push(text)
-    }
+  if (!outgoing.context_management && options.scaffold.bodyTemplate.context_management) {
+    outgoing.context_management = cloneValue(options.scaffold.bodyTemplate.context_management)
   }
 
-  if (!identitySeen) {
-    keptSystem.unshift({ type: "text", text: SYSTEM_IDENTITY })
-  }
+  applyMetadata(outgoing, options.scaffold, options.metadataUserId)
 
-  parsed.system = [billingEntry, ...keptSystem]
-  const firstUserSummary = prependToFirstUserMessage(messages, movedTexts)
+  const extractedSystem = extractIncomingSystem(parsed.system, options.scaffold)
+  const billingText = buildBillingHeaderValue(outgoing.messages ?? [], options.version, options.entrypoint)
+  outgoing.system = buildScaffoldSystem(options.scaffold, billingText, extractedSystem.preservedEntries)
+  const firstUserSummary = prependToFirstUserMessage(
+    outgoing.messages ?? [],
+    extractedSystem.movedTexts
+  )
 
-  const modelId = parsed.model ?? ""
+  const modelId = outgoing.model ?? ""
   const override = getModelOverride(modelId)
   if (override?.disableEffort) {
-    if (parsed.output_config) {
-      delete parsed.output_config.effort
-      if (Object.keys(parsed.output_config).length === 0) {
-        delete parsed.output_config
+    if (outgoing.output_config) {
+      delete outgoing.output_config.effort
+      if (Object.keys(outgoing.output_config).length === 0) {
+        delete outgoing.output_config
       }
     }
 
-    if (parsed.thinking && "effort" in parsed.thinking) {
-      delete parsed.thinking.effort
-      if (Object.keys(parsed.thinking).length === 0) {
-        delete parsed.thinking
+    if (outgoing.thinking && "effort" in outgoing.thinking) {
+      delete outgoing.thinking.effort
+      if (Object.keys(outgoing.thinking).length === 0) {
+        delete outgoing.thinking
       }
     }
   }
 
-  stripAdaptiveTemperature(parsed)
-  ;(parsed as AnthropicRequestBody & { __transformSummary__?: TransformSummary }).__transformSummary__ =
-    summarizeTransformedBody(parsed, movedTexts.length, firstUserSummary)
-  return parsed
+  outgoing.temperature = parsed.temperature
+  stripAdaptiveTemperature(outgoing)
+
+  ;(outgoing as AnthropicRequestBody & { __transformSummary__?: TransformSummary }).__transformSummary__ =
+    summarizeTransformedBody(outgoing, extractedSystem.movedTexts.length, firstUserSummary)
+  ;(outgoing as AnthropicRequestBody & { __toolBridge__?: ToolBridgeResult }).__toolBridge__ =
+    toolBridge
+  return outgoing as AnthropicRequestBody & { __transformSummary__?: TransformSummary; __toolBridge__?: ToolBridgeResult }
 }
 
 export function transformBodyString(
@@ -285,18 +398,19 @@ export function transformBodyString(
 ): TransformResult {
   try {
     const parsed = JSON.parse(rawBody) as AnthropicRequestBody
-    const transformed = applyClaudeCodeRequestTransforms(parsed, options) as AnthropicRequestBody & {
-      __transformSummary__?: TransformSummary
-    }
+    const transformed = applyClaudeCodeRequestTransforms(parsed, options)
     const summary = transformed.__transformSummary__ ?? EMPTY_SUMMARY
+    const toolBridge = transformed.__toolBridge__ ?? EMPTY_TOOL_BRIDGE
     delete transformed.__transformSummary__
+    delete transformed.__toolBridge__
 
     return {
       body: JSON.stringify(transformed),
       modelId: transformed.model ?? "unknown",
       stream: transformed.stream === true,
       transformed: true,
-      summary
+      summary,
+      toolBridge
     }
   } catch {
     return {
@@ -304,7 +418,8 @@ export function transformBodyString(
       modelId: "unknown",
       stream: rawBody.includes('"stream":true') || rawBody.includes('"stream": true'),
       transformed: false,
-      summary: EMPTY_SUMMARY
+      summary: EMPTY_SUMMARY,
+      toolBridge: EMPTY_TOOL_BRIDGE
     }
   }
 }

@@ -11,10 +11,13 @@ import {
 import { getValidCredentials } from "./credentials"
 import { prepareRequestHeaders } from "./headers"
 import { transformBodyString } from "./transforms"
+import { resolveOfficialClaudeScaffold } from "./official-scaffold"
+import {
+  rewriteResponseJsonToolNames,
+  rewriteSseBodyToolNames
+} from "./tool-bridge"
 import { summarizeAnthropicResponse } from "./validation"
 import { resolveClaudeCodeMetadata } from "./version"
-
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 function buildResponseHeaders(upstreamHeaders: Headers): Headers {
   const headers = new Headers()
@@ -38,7 +41,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
   const claudeCodeMetadata = resolveClaudeCodeMetadata()
   const claudeCodeVersion = claudeCodeMetadata.version
-  const claudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli"
   const capturePath = process.env.CLAUDE_PROXY_CAPTURE_PATH
   const app = new Hono()
 
@@ -60,10 +62,41 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
   const handleMessages = async (c: Context) => {
     try {
       const rawBody = await c.req.text()
-      const transformedBody = transformBodyString(rawBody, {
-        version: claudeCodeVersion,
-        entrypoint: claudeCodeEntrypoint
-      })
+      const scaffold = await resolveOfficialClaudeScaffold()
+      const claudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? scaffold.entrypoint
+      const credentials = await getValidCredentials()
+
+      const metadataUserId =
+        process.env.CLAUDE_PROXY_METADATA_USER_ID?.trim() ||
+        null
+
+      const buildRequestAttempt = (unsupportedToolMode: "keep" | "drop") => {
+        const transformedBody = transformBodyString(rawBody, {
+          version: claudeCodeVersion,
+          entrypoint: claudeCodeEntrypoint,
+          scaffold,
+          unsupportedToolMode,
+          metadataUserId
+        })
+
+        const headerBuild = prepareRequestHeaders(
+          c.req.raw.headers,
+          credentials.claudeAiOauth.accessToken,
+          transformedBody.modelId,
+          claudeCodeVersion,
+          scaffold,
+          transformedBody.toolBridge.hasTools
+        )
+
+        return {
+          transformedBody,
+          headerBuild
+        }
+      }
+
+      const firstAttempt = buildRequestAttempt("keep")
+      let transformedBody = firstAttempt.transformedBody
+      let headerBuild = firstAttempt.headerBuild
 
       claudeLog("proxy.request", {
         contentLength: rawBody.length,
@@ -71,14 +104,6 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         modelId: transformedBody.modelId,
         transformed: transformedBody.transformed
       })
-
-      const credentials = await getValidCredentials()
-      const headerBuild = prepareRequestHeaders(
-        c.req.raw.headers,
-        credentials.claudeAiOauth.accessToken,
-        transformedBody.modelId,
-        claudeCodeVersion
-      )
 
       if (capturePath) {
         const fixture = buildCapturedRequestFixture({
@@ -118,35 +143,89 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         modelId: transformedBody.modelId,
         version: claudeCodeVersion,
         versionSource: claudeCodeMetadata.source,
+        scaffoldSource: scaffold.source,
+        scaffoldPath: scaffold.capturePath,
         entrypoint: claudeCodeEntrypoint,
+        upstreamUrl: headerBuild.upstreamUrl,
         betas: headerBuild.betas,
         droppedIncomingBetas: headerBuild.droppedIncomingBetas,
         droppedIncomingHeaders: headerBuild.droppedIncomingHeaders,
         outboundHeaders: headerBuild.debugHeaders,
+        mappedTools: transformedBody.toolBridge.mappedToolNames,
+        unsupportedTools: transformedBody.toolBridge.unsupportedToolNames,
         ...transformedBody.summary
       })
 
-      const upstream = await fetch(ANTHROPIC_API_URL, {
+      let upstream = await fetch(headerBuild.upstreamUrl, {
         method: "POST",
         headers: headerBuild.headers,
         body: transformedBody.body
       })
-      const shouldSummarizeResponse = !upstream.ok || !transformedBody.stream
-      const validationSummary = shouldSummarizeResponse
+      let validationSummary = !upstream.ok || !transformedBody.stream
         ? summarizeAnthropicResponse(await upstream.clone().text())
         : null
+
+      if (
+        !upstream.ok &&
+        validationSummary?.isThirdPartyUsage &&
+        transformedBody.toolBridge.unsupportedToolNames.length > 0
+      ) {
+        claudeLog("proxy.retry.unsupportedToolsDropped", {
+          modelId: transformedBody.modelId,
+          droppedUnsupportedTools: transformedBody.toolBridge.unsupportedToolNames
+        })
+
+        const retryAttempt = buildRequestAttempt("drop")
+        transformedBody = retryAttempt.transformedBody
+        headerBuild = retryAttempt.headerBuild
+        upstream = await fetch(headerBuild.upstreamUrl, {
+          method: "POST",
+          headers: headerBuild.headers,
+          body: transformedBody.body
+        })
+        validationSummary = !upstream.ok || !transformedBody.stream
+          ? summarizeAnthropicResponse(await upstream.clone().text())
+          : null
+      }
 
       claudeLog("proxy.response", {
         status: upstream.status,
         modelId: transformedBody.modelId,
         thirdPartyUsageDetected: validationSummary?.isThirdPartyUsage ?? false,
         errorMessage: validationSummary?.errorMessage ?? null,
-        message: validationSummary?.message ?? null
+        message: validationSummary?.message ?? null,
+        mappedTools: transformedBody.toolBridge.mappedToolNames,
+        unsupportedTools: transformedBody.toolBridge.unsupportedToolNames
       })
+
+      const responseHeaders = buildResponseHeaders(upstream.headers)
+      const contentType = upstream.headers.get("content-type") ?? ""
+      if (upstream.body && Object.keys(transformedBody.toolBridge.officialToOpenNames).length > 0) {
+        if (contentType.includes("text/event-stream")) {
+          return new Response(
+            rewriteSseBodyToolNames(upstream.body, transformedBody.toolBridge.officialToOpenNames),
+            {
+              status: upstream.status,
+              headers: responseHeaders
+            }
+          )
+        }
+
+        if (contentType.includes("application/json")) {
+          const parsed = rewriteResponseJsonToolNames(
+            JSON.parse(await upstream.text()) as unknown,
+            transformedBody.toolBridge.officialToOpenNames
+          )
+          return new Response(JSON.stringify(parsed), {
+            status: upstream.status,
+            headers: responseHeaders
+          })
+        }
+      }
 
       return new Response(upstream.body, {
         status: upstream.status,
-        headers: buildResponseHeaders(upstream.headers)
+        headers: responseHeaders
       })
     } catch (error) {
       claudeLog("proxy.error", { error: error instanceof Error ? error.message : String(error) })

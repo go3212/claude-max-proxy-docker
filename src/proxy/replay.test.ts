@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { buildCapturedRequestFixture, writeCapturedRequestFixture } from "./capture"
 import { writeCredentialsFile, resetCredentialCache, type ClaudeCredentials } from "./credentials"
+import { resetOfficialClaudeScaffoldCache } from "./official-scaffold"
 import { runCapturedRequestValidation } from "./replay"
 import { resetResolvedClaudeCodeVersion } from "./version"
 
@@ -26,6 +27,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch
   resetCredentialCache()
   resetResolvedClaudeCodeVersion()
+  resetOfficialClaudeScaffoldCache()
 })
 
 describe("replay validation", () => {

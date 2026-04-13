@@ -1,7 +1,17 @@
 import { config, getModelOverride } from "./model-config"
 
-function getRequiredBetas(): string[] {
-  return (process.env.ANTHROPIC_BETA_FLAGS ?? config.baseBetas.join(","))
+export interface BetaBuildOptions {
+  baseBetas?: string[]
+  hasTools?: boolean
+}
+
+const TOOL_ONLY_BETAS = [
+  "advisor-tool-2026-03-01",
+  "advanced-tool-use-2025-11-20"
+]
+
+function getRequiredBetas(baseBetas?: string[]): string[] {
+  return (process.env.ANTHROPIC_BETA_FLAGS ?? (baseBetas ?? config.baseBetas).join(","))
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean)
@@ -26,11 +36,17 @@ export function supports1mContext(modelId: string): boolean {
   return major > 4 || (major === 4 && effectiveMinor >= 6)
 }
 
-export function getModelBetas(modelId: string): string[] {
-  const betas = [...getRequiredBetas()]
+export function getModelBetas(modelId: string, options: BetaBuildOptions = {}): string[] {
+  const betas = [...getRequiredBetas(options.baseBetas)]
 
   const primaryLongContextBeta = config.longContextBetas[0]
-  if (primaryLongContextBeta && isEnable1mContext() && supports1mContext(modelId)) {
+  const canUseLongContext = supports1mContext(modelId)
+  if (primaryLongContextBeta && (!isEnable1mContext() || !canUseLongContext)) {
+    const index = betas.indexOf(primaryLongContextBeta)
+    if (index !== -1) betas.splice(index, 1)
+  }
+
+  if (primaryLongContextBeta && isEnable1mContext() && canUseLongContext) {
     betas.push(primaryLongContextBeta)
   }
 
@@ -47,6 +63,13 @@ export function getModelBetas(modelId: string): string[] {
       if (!betas.includes(addition)) {
         betas.push(addition)
       }
+    }
+  }
+
+  if (!options.hasTools) {
+    for (const toolBeta of TOOL_ONLY_BETAS) {
+      const index = betas.indexOf(toolBeta)
+      if (index !== -1) betas.splice(index, 1)
     }
   }
 

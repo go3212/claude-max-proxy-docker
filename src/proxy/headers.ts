@@ -1,5 +1,6 @@
 import crypto from "node:crypto"
 import { getModelBetas } from "./betas"
+import type { OfficialClaudeScaffold } from "./official-scaffold"
 
 const sessionId = crypto.randomUUID()
 
@@ -20,6 +21,7 @@ export interface RequestHeaderBuildResult {
   droppedIncomingBetas: string[]
   droppedIncomingHeaders: string[]
   debugHeaders: Record<string, string>
+  upstreamUrl: string
 }
 
 function parseIncomingBetas(source?: HeaderSource): string[] {
@@ -58,20 +60,48 @@ function summarizeHeadersForDebug(headers: Headers): Record<string, string> {
 export function getUserAgent(cliVersion: string): string {
   return (
     process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${cliVersion} (external, cli)`
+    `claude-cli/${cliVersion} (external, sdk-cli)`
   )
+}
+
+function parseTemplateBetas(scaffold: OfficialClaudeScaffold): string[] {
+  return (scaffold.headerTemplate["anthropic-beta"] ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 export function prepareRequestHeaders(
   incomingHeaders: HeaderSource | undefined,
   accessToken: string,
   modelId: string,
-  cliVersion: string
+  cliVersion: string,
+  scaffold: OfficialClaudeScaffold,
+  hasTools: boolean
 ): RequestHeaderBuildResult {
-  const betas = getModelBetas(modelId)
+  const betas = getModelBetas(modelId, {
+    baseBetas: parseTemplateBetas(scaffold),
+    hasTools
+  })
   const incomingBetas = parseIncomingBetas(incomingHeaders)
 
   const headers = new Headers()
+  for (const [key, value] of Object.entries(scaffold.headerTemplate)) {
+    const lower = key.toLowerCase()
+    if (
+      lower === "authorization" ||
+      lower === "anthropic-beta" ||
+      lower === "user-agent" ||
+      lower === "x-client-request-id" ||
+      lower === "x-claude-code-session-id" ||
+      lower === "content-length" ||
+      lower === "host"
+    ) {
+      continue
+    }
+    headers.set(key, value)
+  }
+
   headers.set("authorization", `Bearer ${accessToken}`)
   headers.set("anthropic-version", "2023-06-01")
   headers.set("anthropic-beta", betas.join(","))
@@ -88,7 +118,8 @@ export function prepareRequestHeaders(
       .filter((beta) => !betas.includes(beta))
       .sort(),
     droppedIncomingHeaders: summarizeDroppedIncomingHeaders(incomingHeaders),
-    debugHeaders: summarizeHeadersForDebug(headers)
+    debugHeaders: summarizeHeadersForDebug(headers),
+    upstreamUrl: scaffold.upstreamUrl
   }
 }
 
@@ -96,13 +127,17 @@ export function buildRequestHeaders(
   incomingHeaders: HeaderSource | undefined,
   accessToken: string,
   modelId: string,
-  cliVersion: string
+  cliVersion: string,
+  scaffold: OfficialClaudeScaffold,
+  hasTools: boolean
 ): Headers {
   return prepareRequestHeaders(
     incomingHeaders,
     accessToken,
     modelId,
-    cliVersion
+    cliVersion,
+    scaffold,
+    hasTools
   ).headers
 }
 

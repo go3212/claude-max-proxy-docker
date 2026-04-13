@@ -102,6 +102,14 @@ bun run validate:capture -- ./captures/latest-request.json
 
 This replays the sanitized request shape through the current checked-out proxy code and exits non-zero if Anthropic still classifies it as third-party extra usage.
 
+For the closest Claude Code parity, first capture one real official Claude request and keep its raw capture available to the proxy:
+
+```bash
+bun run capture:official-claude -- -p "Reply with exactly OK."
+```
+
+When `./captures/official-claude/latest-raw.json` exists, the proxy uses it as the source of truth for the outbound Claude scaffold: `?beta=true`, `sdk-cli` user-agent shape, `x-stainless-*` headers, system scaffold, and other top-level Claude Code request fields.
+
 Capture a real outbound request from the installed official Claude CLI:
 
 ```bash
@@ -143,6 +151,7 @@ Useful commands:
 ```bash
 docker compose logs -f claude-proxy
 bun run inspect:claude-code
+bun run capture:official-claude -- -p "Reply with exactly OK."
 bun run validate:capture -- ./captures/latest-request.json
 docker compose run --rm --entrypoint bun claude-proxy run ./bin/capture-official-claude.ts -- -p "Reply with exactly OK."
 bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.json ./captures/latest-request.json
@@ -157,6 +166,8 @@ bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.jso
 | `CLAUDE_PROXY_DEBUG` | `0` | Enables proxy debug logs to stdout; `OPENCODE_CLAUDE_PROVIDER_DEBUG` remains a compatibility alias |
 | `CLAUDE_PROXY_CAPTURE_PATH` | unset | Writes the latest redacted incoming request fixture to this path |
 | `CLAUDE_PROXY_REQUIRE_INSTALLED_CLAUDE` | `false` | Fails startup if the proxy cannot resolve the installed Claude Code identity from the CLI or global package |
+| `CLAUDE_PROXY_OFFICIAL_CAPTURE_RAW_PATH` | auto | Optional raw official Claude capture file used as the source of truth for the outbound Claude scaffold |
+| `CLAUDE_PROXY_METADATA_USER_ID` | unset | Optional explicit override for `metadata.user_id` in the outbound Claude scaffold |
 | `CLAUDE_OFFICIAL_CAPTURE_DIR` | auto | Base directory for official Claude raw/redacted capture files |
 | `CLAUDE_OFFICIAL_CAPTURE_RAW_PATH` | auto | Override the exact raw official Claude capture file path |
 | `CLAUDE_OFFICIAL_CAPTURE_REDACTED_PATH` | auto | Override the exact redacted official Claude capture file path |
@@ -179,6 +190,8 @@ bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.jso
 When `CLAUDE_PROXY_CAPTURE_PATH` is set, the proxy also writes a redacted copy of the original incoming request plus transform metadata so the exact OpenCode shape can be replayed locally.
 
 When `capture:official-claude` is used, the installed `/usr/bin/claude` process is launched under a Node runtime hook that records only outbound `https://api.anthropic.com/v1/messages` traffic. That produces a raw local capture and a shareable redacted copy for parity diffing against the proxy.
+
+If a raw official capture is available, the proxy uses it at runtime as the scaffold for official Claude Code request structure and layers the Hermes-style billing/reminder transform on top.
 
 The server vendors the core `opencode-claude-auth` logic for signing, beta selection, request transforms, and token refresh, but exposes it as a normal local HTTP proxy instead of an OpenCode plugin.
 
@@ -241,6 +254,17 @@ bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.jso
 ```
 
 If the diff reports a mismatch, that output is the next source of truth for header/body parity changes.
+
+### OpenCode still gets the extra-usage / third-party apps message after the latest parity changes
+
+Make sure the proxy is actually using a real official raw Claude capture:
+
+```bash
+bun run capture:official-claude -- -p "Reply with exactly OK."
+docker compose logs -f claude-proxy
+```
+
+The debug logs should show `scaffoldSource: "raw-capture"` instead of `fallback`. If the proxy is still on fallback, it is missing the official Claude scaffold source it now depends on for closest parity.
 
 ### Docker exits at startup with an installed-Claude error
 
