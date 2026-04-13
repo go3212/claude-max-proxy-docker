@@ -4,23 +4,21 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/rynfar/opencode-claude-max-proxy.svg)](https://github.com/rynfar/opencode-claude-max-proxy/stargazers)
 
-Use your **Claude Max subscription** with OpenCode — with **full API feature support**.
+Use your **Claude Max subscription** with OpenCode through a local proxy server that vendors the core auth and request-shaping logic from `opencode-claude-auth`.
 
 ## The Problem
 
-Anthropic doesn't allow Claude Max subscribers to use their subscription with third-party tools like OpenCode. If you want to use Claude in OpenCode, you have to pay for API access separately - even though you're already paying for "unlimited" Claude.
+Anthropic does not allow Claude Max subscribers to use their subscription directly with third-party tools like OpenCode. After the OAuth validation changes rolled out in April 2026, a plain Bearer-token passthrough was no longer enough for many Claude Code-style requests.
 
 ## The Solution
 
-This proxy transparently forwards Anthropic API requests using your Claude Max OAuth tokens:
+This proxy forwards Anthropic API requests using your Claude Code OAuth tokens and rewrites them to match the Claude Code OAuth format Anthropic now expects server-side:
 
+```text
+OpenCode -> Proxy (localhost:3456) -> api.anthropic.com -> Your Claude Max Subscription
 ```
-OpenCode → Proxy (localhost:3456) → api.anthropic.com → Your Claude Max Subscription
-```
 
-Requests are passed through **as-is** — no transformation, no message flattening. This means every Anthropic API feature works automatically.
-
-**Your Max subscription. Direct API passthrough. Zero additional cost.**
+It keeps the local HTTP proxy workflow, but applies the same core request transforms as `opencode-claude-auth`: billing header signing, Claude Code identity shaping, model-aware beta flags, and direct OAuth refresh with write-back to disk.
 
 ## Features
 
@@ -29,20 +27,18 @@ Requests are passed through **as-is** — no transformation, no message flatteni
 | **Zero API costs** | Uses your Claude Max subscription |
 | **Full API support** | Prompt caching, extended thinking, vision, tool use, PDFs, structured outputs |
 | **Streaming** | Native SSE streaming passthrough |
-| **Auto token refresh** | OAuth tokens are refreshed automatically when expired |
-| **Future-proof** | New API features work immediately — nothing to update |
+| **OAuth bypass parity** | Injects billing headers, Claude Code identity, and model-aware beta flags |
+| **Auto token refresh** | Refreshes OAuth tokens directly and writes rotated tokens back to disk |
+| **Version overrides** | Supports `ANTHROPIC_CLI_VERSION`, `ANTHROPIC_USER_AGENT`, and `ANTHROPIC_BETA_FLAGS` |
 
 ## Prerequisites
 
 1. **Claude Max subscription** - [Subscribe here](https://claude.ai/settings/subscription)
-
-2. **Claude CLI** authenticated (one-time setup):
+2. **Claude CLI** authenticated:
    ```bash
    npm install -g @anthropic-ai/claude-code
    claude login
    ```
-   You only need to run `claude login` once. The proxy reads the saved credentials directly — Claude CLI doesn't need to stay installed.
-
 3. **Bun** runtime:
    ```bash
    curl -fsSL https://bun.sh/install | bash
@@ -58,7 +54,7 @@ bun install
 
 ## Usage
 
-### Start the Proxy
+### Start the proxy
 
 ```bash
 bun run proxy
@@ -70,7 +66,7 @@ bun run proxy
 ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
 ```
 
-Select any `anthropic/claude-*` model (opus, sonnet, haiku).
+Select any `anthropic/claude-*` model.
 
 ### One-liner
 
@@ -82,65 +78,32 @@ bun run proxy & ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 
 ```bash
 docker build -t claude-max-proxy .
-docker run -p 3456:3456 -v ~/.claude:/root/.claude:ro claude-max-proxy
+docker run -p 3456:3456 -v ~/.claude:/root/.claude claude-max-proxy
 ```
-
-## Auto-start on macOS
-
-Set up the proxy to run automatically on login:
-
-```bash
-cat > ~/Library/LaunchAgents/com.claude-max-proxy.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.claude-max-proxy</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$(which bun)</string>
-        <string>run</string>
-        <string>proxy</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>$(pwd)</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-launchctl load ~/Library/LaunchAgents/com.claude-max-proxy.plist
-```
-
-Then add an alias to `~/.zshrc`:
-
-```bash
-echo "alias oc='ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode'" >> ~/.zshrc
-source ~/.zshrc
-```
-
-Now just run `oc` to start OpenCode with Claude Max.
 
 ## Configuration
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `CLAUDE_PROXY_PORT` | 3456 | Proxy server port |
-| `CLAUDE_PROXY_HOST` | 127.0.0.1 | Proxy server host |
+| `CLAUDE_PROXY_PORT` | `3456` | Proxy server port |
+| `CLAUDE_PROXY_HOST` | `127.0.0.1` | Proxy server host |
+| `CLAUDE_PROXY_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | Override the Claude credentials file path |
+| `CLAUDE_PROXY_CLAUDE_CODE_VERSION` | auto-detected | Highest-priority Claude Code version override |
+| `ANTHROPIC_CLI_VERSION` | auto-detected | Claude Code version for billing header and user-agent |
+| `ANTHROPIC_USER_AGENT` | `claude-cli/{version} (external, cli)` | Full user-agent override |
+| `ANTHROPIC_BETA_FLAGS` | built-in Claude Code beta set | Comma-separated beta override |
+| `ANTHROPIC_ENABLE_1M_CONTEXT` | `false` | Adds the 1M context beta for supported Sonnet/Opus models |
+| `CLAUDE_CODE_ENTRYPOINT` | `cli` | Billing header entrypoint value |
 
 ## How It Works
 
 1. **OpenCode** sends a request to `http://127.0.0.1:3456/v1/messages`
-2. **Proxy** reads your OAuth token from `~/.claude/.credentials.json`
-3. **Proxy** forwards the request as-is to `api.anthropic.com` with your token
-4. **Anthropic** processes the request using your Max subscription
+2. **Proxy** reads or refreshes your OAuth token from `~/.claude/.credentials.json`
+3. **Proxy** rewrites the request body and headers to match Claude Code OAuth expectations
+4. **Proxy** forwards the transformed request to `api.anthropic.com`
 5. **Proxy** pipes the response directly back to OpenCode
 
-The proxy is ~80 lines of TypeScript. No message transformation, no SDK dependency, just transparent forwarding.
+The server vendors the core `opencode-claude-auth` logic for signing, beta selection, request transforms, and token refresh, but exposes it as a normal local HTTP proxy instead of an OpenCode plugin.
 
 ## FAQ
 
@@ -150,19 +113,15 @@ OpenCode requires an API key to be set, but the proxy ignores it. Authentication
 
 ### Does this work with other tools besides OpenCode?
 
-Yes! Any tool that uses the Anthropic API format can use this proxy. Just point `ANTHROPIC_BASE_URL` to `http://127.0.0.1:3456`.
+Yes. Any tool that speaks the Anthropic Messages API can point `ANTHROPIC_BASE_URL` at `http://127.0.0.1:3456`.
 
 ### What about rate limits?
 
-Your Claude Max subscription has its own usage limits. This proxy doesn't add any additional limits.
+Your Claude Max subscription keeps its normal usage limits. This proxy does not add extra limits.
 
-### Is my data sent anywhere else?
+### Do I need Claude CLI installed after login?
 
-No. The proxy runs locally and forwards requests directly to `api.anthropic.com`.
-
-### Do I need Claude CLI installed?
-
-Only for the initial `claude login` to create the credentials file. After that, the proxy reads credentials directly — you can uninstall Claude CLI if you want.
+Usually only for the initial `claude login`, but keeping it installed is useful because the proxy can detect the local Claude Code version and may fall back to the CLI if an OAuth refresh fails.
 
 ## Troubleshooting
 
@@ -170,13 +129,17 @@ Only for the initial `claude login` to create the credentials file. After that, 
 
 Run `claude login` to authenticate with the Claude CLI.
 
-### "Token refresh failed"
+### "Claude credentials are expired and could not be refreshed"
 
-Your refresh token may have expired. Run `claude login` again.
+Run `claude login` again. If you are using Docker, make sure the mounted `~/.claude` directory is writable when token rotation needs to be written back.
 
 ### "Connection refused"
 
-Make sure the proxy is running: `bun run proxy`
+Make sure the proxy is running:
+
+```bash
+bun run proxy
+```
 
 ## License
 

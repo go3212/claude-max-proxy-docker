@@ -1,79 +1,38 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import type { Context } from "hono"
-import type { ProxyConfig, ClaudeCredentials } from "./types"
+import type { ProxyConfig } from "./types"
 import { DEFAULT_PROXY_CONFIG } from "./types"
 import { claudeLog } from "../logger"
-import { readFileSync } from "fs"
-import { join } from "path"
-import { homedir } from "os"
+import { getValidCredentials } from "./credentials"
+import { buildRequestHeaders } from "./headers"
+import { transformBodyString } from "./transforms"
+import { resolveClaudeCodeVersion } from "./version"
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-const TOKEN_REFRESH_URL = "https://platform.claude.com/v1/oauth/token"
-const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-const OAUTH_SCOPES = "user:profile user:inference user:sessions:claude_code user:mcp_servers"
-const CREDENTIALS_PATH = join(homedir(), ".claude", ".credentials.json")
 
-let credentials: ClaudeCredentials
-
-function loadCredentials(): ClaudeCredentials {
-  try {
-    const raw = readFileSync(CREDENTIALS_PATH, "utf-8")
-    return JSON.parse(raw)
-  } catch (error) {
-    throw new Error(
-      `Failed to load credentials from ${CREDENTIALS_PATH}. Run 'claude login' first.\n` +
-      (error instanceof Error ? error.message : String(error))
-    )
+function buildResponseHeaders(upstreamHeaders: Headers): Headers {
+  const headers = new Headers()
+  for (const [key, value] of upstreamHeaders) {
+    const lower = key.toLowerCase()
+    if (
+      lower === "connection" ||
+      lower === "keep-alive" ||
+      lower === "transfer-encoding" ||
+      lower === "content-length"
+    ) {
+      continue
+    }
+    headers.set(key, value)
   }
-}
-
-async function refreshToken(): Promise<void> {
-  claudeLog("auth.refreshing")
-  const res = await fetch(TOKEN_REFRESH_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: credentials.claudeAiOauth.refreshToken,
-      client_id: OAUTH_CLIENT_ID,
-      scope: OAUTH_SCOPES
-    })
-  })
-
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Token refresh failed (${res.status}): ${body}`)
-  }
-
-  const data = await res.json() as {
-    access_token: string
-    refresh_token: string
-    expires_in: number
-  }
-
-  credentials.claudeAiOauth.accessToken = data.access_token
-  credentials.claudeAiOauth.refreshToken = data.refresh_token
-  credentials.claudeAiOauth.expiresAt = Date.now() + data.expires_in * 1000
-  claudeLog("auth.refreshed", { expiresAt: credentials.claudeAiOauth.expiresAt })
-}
-
-async function ensureValidToken(): Promise<string> {
-  if (Date.now() >= credentials.claudeAiOauth.expiresAt - 60_000) {
-    await refreshToken()
-  }
-  return credentials.claudeAiOauth.accessToken
+  return headers
 }
 
 export function createProxyServer(config: Partial<ProxyConfig> = {}) {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
+  const claudeCodeVersion = resolveClaudeCodeVersion()
+  const claudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli"
   const app = new Hono()
-
-  credentials = loadCredentials()
-  claudeLog("auth.loaded", {
-    subscriptionType: credentials.claudeAiOauth.subscriptionType,
-    expiresAt: credentials.claudeAiOauth.expiresAt
-  })
 
   app.use("*", cors())
 
@@ -81,57 +40,52 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
     return c.json({
       status: "ok",
       service: "claude-max-proxy",
-      version: "2.0.0",
+      version: "2.1.0",
       mode: "passthrough",
+      authMode: "opencode-claude-auth-server",
+      claudeCodeVersion,
       endpoints: ["/v1/messages", "/messages"]
     })
   })
 
   const handleMessages = async (c: Context) => {
     try {
-      const token = await ensureValidToken()
-      const body = await c.req.text()
-
-      claudeLog("proxy.request", {
-        contentLength: body.length,
-        hasStream: body.includes('"stream"')
+      const credentials = await getValidCredentials()
+      const rawBody = await c.req.text()
+      const transformedBody = transformBodyString(rawBody, {
+        version: claudeCodeVersion,
+        entrypoint: claudeCodeEntrypoint
       })
 
-      const headers: Record<string, string> = {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01",
-        "x-app": "cli",
-        "User-Agent": "claude-cli/2.1.68"
-      }
+      claudeLog("proxy.request", {
+        contentLength: rawBody.length,
+        hasStream: transformedBody.stream,
+        modelId: transformedBody.modelId,
+        transformed: transformedBody.transformed
+      })
 
-      // Merge anthropic-beta headers: always include oauth, plus any from client
-      const betaHeader = c.req.header("anthropic-beta")
-      const betaValues = new Set(["oauth-2025-04-20"])
-      if (betaHeader) {
-        for (const v of betaHeader.split(",")) {
-          betaValues.add(v.trim())
-        }
-      }
-      headers["anthropic-beta"] = [...betaValues].join(",")
+      const headers = buildRequestHeaders(
+        c.req.raw.headers,
+        credentials.claudeAiOauth.accessToken,
+        transformedBody.modelId,
+        claudeCodeVersion
+      )
+      headers.set("content-type", "application/json")
 
       const upstream = await fetch(ANTHROPIC_API_URL, {
         method: "POST",
         headers,
-        body
+        body: transformedBody.body
       })
 
-      claudeLog("proxy.response", { status: upstream.status })
+      claudeLog("proxy.response", {
+        status: upstream.status,
+        modelId: transformedBody.modelId
+      })
 
-      // Pipe the response directly back
       return new Response(upstream.body, {
         status: upstream.status,
-        headers: {
-          "Content-Type": upstream.headers.get("Content-Type") || "application/json",
-          ...(upstream.headers.get("Cache-Control") && {
-            "Cache-Control": upstream.headers.get("Cache-Control")!
-          })
-        }
+        headers: buildResponseHeaders(upstream.headers)
       })
     } catch (error) {
       claudeLog("proxy.error", { error: error instanceof Error ? error.message : String(error) })
@@ -148,11 +102,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
   app.post("/v1/messages", handleMessages)
   app.post("/messages", handleMessages)
 
-  return { app, config: finalConfig }
+  return { app, config: finalConfig, claudeCodeVersion }
 }
 
 export async function startProxyServer(config: Partial<ProxyConfig> = {}) {
-  const { app, config: finalConfig } = createProxyServer(config)
+  const { app, config: finalConfig, claudeCodeVersion } = createProxyServer(config)
 
   const server = Bun.serve({
     port: finalConfig.port,
@@ -160,7 +114,8 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}) {
     fetch: app.fetch
   })
 
-  console.log(`Claude Max Proxy (passthrough) running at http://${finalConfig.host}:${finalConfig.port}`)
+  console.log(`Claude Max Proxy (opencode-claude-auth server) running at http://${finalConfig.host}:${finalConfig.port}`)
+  console.log(`Claude Code parity version: ${claudeCodeVersion}`)
   console.log(`Supports: prompt caching, extended thinking, vision, tool use, PDFs, streaming`)
   console.log(`\nTo use with OpenCode:`)
   console.log(`  ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://${finalConfig.host}:${finalConfig.port} opencode`)
