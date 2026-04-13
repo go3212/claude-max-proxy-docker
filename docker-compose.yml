@@ -6,8 +6,16 @@ services:
     environment:
       - CLAUDE_PROXY_HOST=0.0.0.0
       - CLAUDE_PROXY_PORT=3456
+      - CLAUDE_PROXY_DEBUG=1
+      - CLAUDE_PROXY_CAPTURE_PATH=/captures/latest-request.json
     volumes:
       - claude-data:/root/.claude
+      - ./captures:/captures
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
 volumes:

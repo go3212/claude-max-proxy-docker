@@ -94,11 +94,27 @@ The live validator sends one small non-streaming request through the current che
 - `CLAUDE_PROXY_VALIDATE_SYSTEM`
 - `CLAUDE_PROXY_VALIDATE_PROMPT`
 
+Replay a redacted OpenCode request captured by the proxy:
+
+```bash
+bun run validate:capture -- ./captures/latest-request.json
+```
+
+This replays the sanitized request shape through the current checked-out proxy code and exits non-zero if Anthropic still classifies it as third-party extra usage.
+
 ## Docker
 
 ```bash
-docker build -t claude-max-proxy .
-docker run -p 3456:3456 -v ~/.claude:/root/.claude claude-max-proxy
+docker compose up --build
+```
+
+The bundled `docker-compose.yml` enables debug logging and writes the latest redacted incoming request to `./captures/latest-request.json`.
+
+Useful commands:
+
+```bash
+docker compose logs -f claude-proxy
+bun run validate:capture -- ./captures/latest-request.json
 ```
 
 ## Configuration
@@ -107,6 +123,8 @@ docker run -p 3456:3456 -v ~/.claude:/root/.claude claude-max-proxy
 |---------------------|---------|-------------|
 | `CLAUDE_PROXY_PORT` | `3456` | Proxy server port |
 | `CLAUDE_PROXY_HOST` | `127.0.0.1` | Proxy server host |
+| `CLAUDE_PROXY_DEBUG` | `0` | Enables proxy debug logs to stdout; `OPENCODE_CLAUDE_PROVIDER_DEBUG` remains a compatibility alias |
+| `CLAUDE_PROXY_CAPTURE_PATH` | unset | Writes the latest redacted incoming request fixture to this path |
 | `CLAUDE_PROXY_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | Override the Claude credentials file path |
 | `CLAUDE_PROXY_CLAUDE_CODE_VERSION` | auto-detected | Highest-priority Claude Code version override |
 | `ANTHROPIC_CLI_VERSION` | auto-detected | Claude Code version for billing header and user-agent |
@@ -122,6 +140,8 @@ docker run -p 3456:3456 -v ~/.claude:/root/.claude claude-max-proxy
 3. **Proxy** rewrites the request body and headers to match Claude Code OAuth expectations
 4. **Proxy** forwards the transformed request to `api.anthropic.com`
 5. **Proxy** pipes the response directly back to OpenCode
+
+When `CLAUDE_PROXY_CAPTURE_PATH` is set, the proxy also writes a redacted copy of the original incoming request plus transform metadata so the exact OpenCode shape can be replayed locally.
 
 The server vendors the core `opencode-claude-auth` logic for signing, beta selection, request transforms, and token refresh, but exposes it as a normal local HTTP proxy instead of an OpenCode plugin.
 
@@ -160,6 +180,18 @@ Make sure the proxy is running:
 ```bash
 bun run proxy
 ```
+
+### OpenCode still gets the extra-usage / third-party apps message
+
+If you are testing with Docker Compose, inspect the live logs and the latest redacted capture:
+
+```bash
+docker compose logs -f claude-proxy
+cat ./captures/latest-request.json
+bun run validate:capture -- ./captures/latest-request.json
+```
+
+If `validate:live` succeeds but `validate:capture` fails, the remaining issue is in the real OpenCode request shape rather than the basic proxy credentials path.
 
 ## License
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { writeCredentialsFile, resetCredentialCache, type ClaudeCredentials } from "./credentials"
@@ -9,6 +9,7 @@ import { resetResolvedClaudeCodeVersion } from "./version"
 
 const originalCredentialsPath = process.env.CLAUDE_PROXY_CREDENTIALS_PATH
 const originalCliVersion = process.env.ANTHROPIC_CLI_VERSION
+const originalCapturePath = process.env.CLAUDE_PROXY_CAPTURE_PATH
 const originalFetch = globalThis.fetch
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -22,6 +23,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 afterEach(() => {
   restoreEnv("CLAUDE_PROXY_CREDENTIALS_PATH", originalCredentialsPath)
   restoreEnv("ANTHROPIC_CLI_VERSION", originalCliVersion)
+  restoreEnv("CLAUDE_PROXY_CAPTURE_PATH", originalCapturePath)
   globalThis.fetch = originalFetch
   resetCredentialCache()
   resetResolvedClaudeCodeVersion()
@@ -31,8 +33,10 @@ describe("server", () => {
   test("forwards transformed Anthropic requests with parity headers", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "claude-max-proxy-server-"))
     const credentialsPath = join(tempDir, "credentials.json")
+    const capturePath = join(tempDir, "latest-request.json")
     process.env.CLAUDE_PROXY_CREDENTIALS_PATH = credentialsPath
     process.env.ANTHROPIC_CLI_VERSION = "9.9.9"
+    process.env.CLAUDE_PROXY_CAPTURE_PATH = capturePath
 
     const credentials: ClaudeCredentials = {
       claudeAiOauth: {
@@ -106,5 +110,24 @@ describe("server", () => {
     ])
     expect(forwarded.temperature).toBeUndefined()
     expect(response.headers.get("content-encoding")).toBeNull()
+
+    const captured = JSON.parse(readFileSync(capturePath, "utf-8")) as {
+      request: {
+        body: {
+          system: string
+          messages: Array<{ role: string; content: string }>
+        }
+      }
+      proxy: {
+        summary: {
+          textSystemReducedToCoreOnly: boolean
+        }
+      }
+    }
+    expect(captured.request.body.system).toMatch(/\[redacted-system-1\]/)
+    expect(JSON.stringify(captured.request.body)).not.toContain("x-anthropic-billing-header")
+    expect(captured.request.body.messages[0]?.role).toBe("user")
+    expect(captured.request.body.messages[0]?.content).toMatch(/\[redacted-user-1\]/)
+    expect(captured.proxy.summary.textSystemReducedToCoreOnly).toBe(true)
   })
 })

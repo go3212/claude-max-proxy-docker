@@ -1,10 +1,6 @@
 #!/usr/bin/env bun
 
-import { createProxyServer } from "../src/proxy/server"
-import {
-  buildValidationExcerpt,
-  summarizeAnthropicResponse
-} from "../src/proxy/validation"
+import { runProxyValidationRequest } from "../src/proxy/replay"
 
 const model =
   process.env.CLAUDE_PROXY_VALIDATE_MODEL ??
@@ -29,35 +25,25 @@ const requestBody = {
   ]
 }
 
-const { app, claudeCodeVersion } = createProxyServer()
-
-const response = await app.request("http://localhost/v1/messages", {
+const result = await runProxyValidationRequest({
   method: "POST",
+  path: "/v1/messages",
   headers: {
     "content-type": "application/json"
   },
-  body: JSON.stringify(requestBody)
+  body: JSON.stringify(requestBody),
+  model
 })
 
-const rawBody = await response.text()
-const summary = summarizeAnthropicResponse(rawBody)
+console.log(`status: ${result.status}`)
+console.log(`model: ${result.model}`)
+console.log(`claude_code_version: ${result.claudeCodeVersion}`)
+console.log(`third_party_usage_detected: ${result.summary.isThirdPartyUsage ? "yes" : "no"}`)
 
-console.log(`status: ${response.status}`)
-console.log(`model: ${model}`)
-console.log(`claude_code_version: ${claudeCodeVersion}`)
-console.log(`third_party_usage_detected: ${summary.isThirdPartyUsage ? "yes" : "no"}`)
-
-const excerpt = buildValidationExcerpt(summary)
-if (excerpt) {
-  console.log(`response_excerpt: ${excerpt}`)
+if (result.excerpt) {
+  console.log(`response_excerpt: ${result.excerpt}`)
 }
 
-const accepted =
-  response.ok &&
-  !summary.isThirdPartyUsage &&
-  !summary.errorMessage &&
-  Boolean(summary.assistantText || rawBody.trim())
-
-if (!accepted) {
+if (!result.accepted) {
   process.exitCode = 1
 }
