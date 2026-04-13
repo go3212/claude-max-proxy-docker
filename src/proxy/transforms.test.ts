@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   SYSTEM_IDENTITY,
   applyClaudeCodeRequestTransforms,
+  transformBodyString,
   type AnthropicRequestBody
 } from "./transforms"
 
@@ -41,9 +42,15 @@ describe("transforms", () => {
     expect(system).toHaveLength(2)
     expect(system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
     expect(system[1]?.text).toBe(SYSTEM_IDENTITY)
-    expect(transformed.messages?.[0]?.content).toBe(
-      "Stay helpful.\n\nExtra system guidance\n\nhello world"
-    )
+    expect(transformed.messages?.[0]?.content).toEqual([
+      {
+        type: "text",
+        text:
+          "<system-reminder>\nStay helpful.\n</system-reminder>\n\n" +
+          "<system-reminder>\nExtra system guidance\n</system-reminder>\n\n" +
+          "hello world"
+      }
+    ])
     expect(transformed.temperature).toBeUndefined()
   })
 
@@ -67,7 +74,13 @@ describe("transforms", () => {
     const system = transformed.system as Array<{ text?: string }>
     expect(system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
     expect(system[1]?.text).toBe(SYSTEM_IDENTITY)
-    expect(transformed.messages?.[0]?.content).toBe("plain system\n\nhello world")
+    expect(transformed.messages?.[0]?.content).toEqual([
+      {
+        type: "text",
+        text:
+          "<system-reminder>\nplain system\n</system-reminder>\n\nhello world"
+      }
+    ])
   })
 
   test("preserves non-text user blocks when relocating system text", () => {
@@ -92,9 +105,10 @@ describe("transforms", () => {
 
     const content = transformed.messages?.[0]?.content
     expect(Array.isArray(content)).toBe(true)
-    expect((content as Array<{ type?: string; text?: string }>)[0]?.text).toBe("plain system")
-    expect((content as Array<{ type?: string }>)[1]?.type).toBe("image")
-    expect((content as Array<{ type?: string; text?: string }>)[2]?.text).toBe("hello world")
+    expect((content as Array<{ type?: string }>)[0]?.type).toBe("image")
+    expect((content as Array<{ type?: string; text?: string }>)[1]?.text).toBe(
+      "<system-reminder>\nplain system\n</system-reminder>\n\nhello world"
+    )
   })
 
   test("is idempotent for billing and identity entries", () => {
@@ -132,5 +146,48 @@ describe("transforms", () => {
 
     expect(transformed.output_config).toBeUndefined()
     expect(transformed.thinking).toBeUndefined()
+  })
+
+  test("preserves non-text system entries while reducing text system entries to core only", () => {
+    const transformed = applyClaudeCodeRequestTransforms({
+      system: [
+        "plain system",
+        {
+          type: "metadata",
+          source: "preserve-me"
+        }
+      ],
+      messages: [{ role: "user", content: "hello world" }],
+      model: "claude-sonnet-4-5-20250929"
+    }, {
+      version: "2.1.104",
+      entrypoint: "cli"
+    })
+
+    const system = transformed.system as Array<{ type?: string; text?: string; source?: string }>
+    expect(system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
+    expect(system[1]?.text).toBe(SYSTEM_IDENTITY)
+    expect(system[2]).toEqual({ type: "metadata", source: "preserve-me" })
+  })
+
+  test("summarizes the transformed request shape without leaking prompt text", () => {
+    const result = transformBodyString(JSON.stringify({
+      model: "claude-sonnet-4-5-20250929",
+      system: "plain system",
+      messages: [{ role: "user", content: "hello world" }]
+    }), {
+      version: "2.1.104",
+      entrypoint: "cli"
+    })
+
+    expect(result.summary).toEqual({
+      movedSystemTextCount: 1,
+      hadFirstUserMessage: true,
+      hadFirstUserTextBlock: true,
+      finalSystemTextCount: 2,
+      textSystemReducedToCoreOnly: true
+    })
+    expect(JSON.stringify(result.summary)).not.toContain("plain system")
+    expect(JSON.stringify(result.summary)).not.toContain("hello world")
   })
 })

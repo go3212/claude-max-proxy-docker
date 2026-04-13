@@ -39,11 +39,28 @@ export interface TransformOptions {
   entrypoint: string
 }
 
+export interface TransformSummary {
+  movedSystemTextCount: number
+  hadFirstUserMessage: boolean
+  hadFirstUserTextBlock: boolean
+  finalSystemTextCount: number
+  textSystemReducedToCoreOnly: boolean
+}
+
 export interface TransformResult {
   body: string
   modelId: string
   stream: boolean
   transformed: boolean
+  summary: TransformSummary
+}
+
+const EMPTY_SUMMARY: TransformSummary = {
+  movedSystemTextCount: 0,
+  hadFirstUserMessage: false,
+  hadFirstUserTextBlock: false,
+  finalSystemTextCount: 0,
+  textSystemReducedToCoreOnly: false
 }
 
 function entryText(entry: SystemEntry | string): string {
@@ -65,10 +82,6 @@ function normalizeSystemEntries(
   return []
 }
 
-function hasIdentityEntry(entries: Array<SystemEntry | string>): boolean {
-  return entries.some((entry) => entryText(entry).startsWith(SYSTEM_IDENTITY))
-}
-
 function supportsAdaptiveThinking(modelId: string): boolean {
   const lower = modelId.toLowerCase()
   return lower.includes("4-6") || lower.includes("4.6")
@@ -82,71 +95,165 @@ function stripAdaptiveTemperature(body: AnthropicRequestBody): void {
   delete body.temperature
 }
 
+function buildSystemReminderText(texts: string[]): string {
+  return texts
+    .map((text) => `<system-reminder>\n${text}\n</system-reminder>`)
+    .join("\n\n")
+}
+
+function prependToFirstUserMessage(
+  messages: AnthropicMessage[],
+  texts: string[]
+): Pick<TransformSummary, "hadFirstUserMessage" | "hadFirstUserTextBlock"> {
+  if (texts.length === 0) {
+    return {
+      hadFirstUserMessage: false,
+      hadFirstUserTextBlock: false
+    }
+  }
+
+  const combined = buildSystemReminderText(texts)
+
+  for (const message of messages) {
+    if (message.role !== "user") continue
+
+    if (typeof message.content === "string") {
+      message.content = [{
+        type: "text",
+        text: message.content ? `${combined}\n\n${message.content}` : combined
+      }]
+      return {
+        hadFirstUserMessage: true,
+        hadFirstUserTextBlock: true
+      }
+    }
+
+    if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block.type === "text" && typeof block.text === "string") {
+          block.text = block.text ? `${combined}\n\n${block.text}` : combined
+          return {
+            hadFirstUserMessage: true,
+            hadFirstUserTextBlock: true
+          }
+        }
+      }
+
+      message.content.unshift({
+        type: "text",
+        text: combined
+      })
+      return {
+        hadFirstUserMessage: true,
+        hadFirstUserTextBlock: false
+      }
+    }
+
+    message.content = [{
+      type: "text",
+      text: combined
+    }]
+    return {
+      hadFirstUserMessage: true,
+      hadFirstUserTextBlock: false
+    }
+  }
+
+  return {
+    hadFirstUserMessage: false,
+    hadFirstUserTextBlock: false
+  }
+}
+
+function summarizeTransformedBody(
+  body: AnthropicRequestBody,
+  movedSystemTextCount: number,
+  firstUserSummary: Pick<TransformSummary, "hadFirstUserMessage" | "hadFirstUserTextBlock">
+): TransformSummary {
+  const systemEntries = normalizeSystemEntries(body.system)
+  const textEntries = systemEntries.filter((entry) => {
+    if (typeof entry === "string") return entry.length > 0
+    return entry.type === "text" && typeof entry.text === "string" && entry.text.length > 0
+  })
+
+  return {
+    movedSystemTextCount,
+    hadFirstUserMessage: firstUserSummary.hadFirstUserMessage,
+    hadFirstUserTextBlock: firstUserSummary.hadFirstUserTextBlock,
+    finalSystemTextCount: textEntries.length,
+    textSystemReducedToCoreOnly: textEntries.every((entry) => {
+      const text = entryText(entry)
+      return text.startsWith(BILLING_PREFIX) || text === SYSTEM_IDENTITY
+    })
+  }
+}
+
 export function applyClaudeCodeRequestTransforms(
   parsed: AnthropicRequestBody,
   options: TransformOptions
 ): AnthropicRequestBody {
   const messages = Array.isArray(parsed.messages) ? parsed.messages : []
-  const normalizedSystem = normalizeSystemEntries(parsed.system)
-    .filter((entry) => !entryText(entry).startsWith(BILLING_PREFIX))
-
-  if (!hasIdentityEntry(normalizedSystem)) {
-    normalizedSystem.unshift({ type: "text", text: SYSTEM_IDENTITY })
+  if (messages.length === 0) {
+    stripAdaptiveTemperature(parsed)
+    return parsed
   }
 
-  const billingHeader = buildBillingHeaderValue(messages, options.version, options.entrypoint)
-  normalizedSystem.unshift({ type: "text", text: billingHeader })
-
-  const splitSystem: Array<SystemEntry | string> = []
-  for (const entry of normalizedSystem) {
-    if (
-      typeof entry !== "string" &&
-      entry.type === "text" &&
-      typeof entry.text === "string" &&
-      entry.text.startsWith(SYSTEM_IDENTITY) &&
-      entry.text.length > SYSTEM_IDENTITY.length
-    ) {
-      const rest = entry.text.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
-      const { text: _text, ...entryProps } = entry
-      const { cache_control: _cacheControl, ...identityProps } = entryProps
-      splitSystem.push({ ...identityProps, text: SYSTEM_IDENTITY })
-      if (rest.length > 0) {
-        splitSystem.push({ ...entryProps, text: rest })
-      }
-      continue
-    }
-
-    splitSystem.push(entry)
+  const rawSystem = normalizeSystemEntries(parsed.system)
+  const billingEntry: SystemEntry = {
+    type: "text",
+    text: buildBillingHeaderValue(messages, options.version, options.entrypoint)
   }
-
-  parsed.system = splitSystem
 
   const keptSystem: Array<SystemEntry | string> = []
   const movedTexts: string[] = []
-  for (const entry of splitSystem) {
-    const text = entryText(entry)
-    if (text.startsWith(BILLING_PREFIX) || text.startsWith(SYSTEM_IDENTITY)) {
+  let identitySeen = false
+
+  for (const entry of rawSystem) {
+    if (typeof entry === "string") {
+      if (entry.startsWith(BILLING_PREFIX)) continue
+      if (entry.startsWith(SYSTEM_IDENTITY)) {
+        if (identitySeen) continue
+        identitySeen = true
+        keptSystem.push(SYSTEM_IDENTITY)
+        const rest = entry.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
+        if (rest) movedTexts.push(rest)
+        continue
+      }
+      if (entry) movedTexts.push(entry)
+      continue
+    }
+
+    if (entry.type !== "text") {
       keptSystem.push(entry)
-    } else if (text.length > 0) {
+      continue
+    }
+
+    const text = entry.text ?? ""
+    if (text.startsWith(BILLING_PREFIX)) {
+      continue
+    }
+
+    if (text.startsWith(SYSTEM_IDENTITY)) {
+      if (identitySeen) continue
+      identitySeen = true
+      const identityEntry: SystemEntry = { ...entry, text: SYSTEM_IDENTITY }
+      keptSystem.push(identityEntry)
+      const rest = text.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
+      if (rest) movedTexts.push(rest)
+      continue
+    }
+
+    if (text) {
       movedTexts.push(text)
     }
   }
 
-  if (movedTexts.length > 0 && Array.isArray(parsed.messages)) {
-    const firstUser = parsed.messages.find((message) => message.role === "user")
-    if (firstUser) {
-      parsed.system = keptSystem
-      const prefix = movedTexts.join("\n\n")
-
-      if (typeof firstUser.content === "string") {
-        firstUser.content = `${prefix}\n\n${firstUser.content}`
-      } else if (Array.isArray(firstUser.content)) {
-        firstUser.content.unshift({ type: "text", text: prefix })
-      } else {
-        firstUser.content = prefix
-      }
-    }
+  if (!identitySeen) {
+    keptSystem.unshift({ type: "text", text: SYSTEM_IDENTITY })
   }
+
+  parsed.system = [billingEntry, ...keptSystem]
+  const firstUserSummary = prependToFirstUserMessage(messages, movedTexts)
 
   const modelId = parsed.model ?? ""
   const override = getModelOverride(modelId)
@@ -167,6 +274,8 @@ export function applyClaudeCodeRequestTransforms(
   }
 
   stripAdaptiveTemperature(parsed)
+  ;(parsed as AnthropicRequestBody & { __transformSummary__?: TransformSummary }).__transformSummary__ =
+    summarizeTransformedBody(parsed, movedTexts.length, firstUserSummary)
   return parsed
 }
 
@@ -176,19 +285,26 @@ export function transformBodyString(
 ): TransformResult {
   try {
     const parsed = JSON.parse(rawBody) as AnthropicRequestBody
-    const transformed = applyClaudeCodeRequestTransforms(parsed, options)
+    const transformed = applyClaudeCodeRequestTransforms(parsed, options) as AnthropicRequestBody & {
+      __transformSummary__?: TransformSummary
+    }
+    const summary = transformed.__transformSummary__ ?? EMPTY_SUMMARY
+    delete transformed.__transformSummary__
+
     return {
       body: JSON.stringify(transformed),
       modelId: transformed.model ?? "unknown",
       stream: transformed.stream === true,
-      transformed: true
+      transformed: true,
+      summary
     }
   } catch {
     return {
       body: rawBody,
       modelId: "unknown",
       stream: rawBody.includes('"stream":true') || rawBody.includes('"stream": true'),
-      transformed: false
+      transformed: false,
+      summary: EMPTY_SUMMARY
     }
   }
 }

@@ -73,6 +73,17 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
       )
       headers.set("content-type", "application/json")
 
+      claudeLog("proxy.request.shape", {
+        modelId: transformedBody.modelId,
+        version: claudeCodeVersion,
+        entrypoint: claudeCodeEntrypoint,
+        betas: (headers.get("anthropic-beta") ?? "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        ...transformedBody.summary
+      })
+
       const upstream = await fetch(ANTHROPIC_API_URL, {
         method: "POST",
         headers,

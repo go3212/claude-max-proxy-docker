@@ -74,6 +74,26 @@ Select any `anthropic/claude-*` model.
 bun run proxy & ANTHROPIC_API_KEY=dummy ANTHROPIC_BASE_URL=http://127.0.0.1:3456 opencode
 ```
 
+## Validation
+
+Run the local regression suite:
+
+```bash
+bun test
+```
+
+Run a real in-process validation request against Anthropic with your local Claude credentials:
+
+```bash
+bun run validate:live
+```
+
+The live validator sends one small non-streaming request through the current checked-out proxy code and exits non-zero if Anthropic still classifies it as third-party extra usage. You can override its inputs with:
+
+- `CLAUDE_PROXY_VALIDATE_MODEL`
+- `CLAUDE_PROXY_VALIDATE_SYSTEM`
+- `CLAUDE_PROXY_VALIDATE_PROMPT`
+
 ## Docker
 
 ```bash

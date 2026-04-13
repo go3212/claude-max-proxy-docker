@@ -13,6 +13,7 @@
   "scripts": {
     "start": "bun run ./bin/claude-proxy.ts",
     "proxy": "bun run ./bin/claude-proxy.ts",
+    "validate:live": "bun run ./bin/validate-proxy.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

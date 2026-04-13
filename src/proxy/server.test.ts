@@ -93,12 +93,17 @@ describe("server", () => {
 
     const forwarded = JSON.parse(seenBody) as {
       system: Array<{ text?: string }>
-      messages: Array<{ content?: string }>
+      messages: Array<{ content?: Array<{ type?: string; text?: string }> }>
       temperature?: number
     }
     expect(forwarded.system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
     expect(forwarded.system[1]?.text).toBe(SYSTEM_IDENTITY)
-    expect(forwarded.messages[0]?.content).toBe("Stay helpful\n\nhello world")
+    expect(forwarded.messages[0]?.content).toEqual([
+      {
+        type: "text",
+        text: "<system-reminder>\nStay helpful\n</system-reminder>\n\nhello world"
+      }
+    ])
     expect(forwarded.temperature).toBeUndefined()
     expect(response.headers.get("content-encoding")).toBeNull()
   })
