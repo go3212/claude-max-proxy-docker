@@ -38,6 +38,7 @@ const result = await runProxyValidationRequest({
 console.log(`status: ${result.status}`)
 console.log(`model: ${result.model}`)
 console.log(`claude_code_version: ${result.claudeCodeVersion}`)
+console.log(`claude_code_version_source: ${result.claudeCodeVersionSource}`)
 console.log(`third_party_usage_detected: ${result.summary.isThirdPartyUsage ? "yes" : "no"}`)
 
 if (result.excerpt) {

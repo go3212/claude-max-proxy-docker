@@ -18,6 +18,7 @@ export interface ProxyValidationResult {
   status: number
   model: string
   claudeCodeVersion: string
+  claudeCodeVersionSource: string
   summary: ValidationSummary
   excerpt: string
   accepted: boolean
@@ -35,7 +36,7 @@ function inferModel(body: string, fallback = "unknown"): string {
 export async function runProxyValidationRequest(
   request: ProxyValidationRequest
 ): Promise<ProxyValidationResult> {
-  const { app, claudeCodeVersion } = createProxyServer()
+  const { app, claudeCodeVersion, claudeCodeMetadata } = createProxyServer()
   const response = await app.request(`http://localhost${request.path}`, {
     method: request.method,
     headers: request.headers,
@@ -55,6 +56,7 @@ export async function runProxyValidationRequest(
     status: response.status,
     model: request.model ?? inferModel(request.body),
     claudeCodeVersion,
+    claudeCodeVersionSource: claudeCodeMetadata.source,
     summary,
     excerpt,
     accepted

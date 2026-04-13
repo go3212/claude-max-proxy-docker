@@ -12,7 +12,7 @@ import { getValidCredentials } from "./credentials"
 import { prepareRequestHeaders } from "./headers"
 import { transformBodyString } from "./transforms"
 import { summarizeAnthropicResponse } from "./validation"
-import { resolveClaudeCodeVersion } from "./version"
+import { resolveClaudeCodeMetadata } from "./version"
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
@@ -36,7 +36,8 @@ function buildResponseHeaders(upstreamHeaders: Headers): Headers {
 
 export function createProxyServer(config: Partial<ProxyConfig> = {}) {
   const finalConfig = { ...DEFAULT_PROXY_CONFIG, ...config }
-  const claudeCodeVersion = resolveClaudeCodeVersion()
+  const claudeCodeMetadata = resolveClaudeCodeMetadata()
+  const claudeCodeVersion = claudeCodeMetadata.version
   const claudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli"
   const capturePath = process.env.CLAUDE_PROXY_CAPTURE_PATH
   const app = new Hono()
@@ -51,6 +52,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
       mode: "passthrough",
       authMode: "opencode-claude-auth-server",
       claudeCodeVersion,
+      claudeCodeVersionSource: claudeCodeMetadata.source,
       endpoints: ["/v1/messages", "/messages"]
     })
   })
@@ -114,6 +116,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
       claudeLog("proxy.request.shape", {
         modelId: transformedBody.modelId,
         version: claudeCodeVersion,
+        versionSource: claudeCodeMetadata.source,
         entrypoint: claudeCodeEntrypoint,
         betas: headerBuild.betas,
         droppedIncomingBetas: headerBuild.droppedIncomingBetas,
@@ -159,11 +162,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
   app.post("/v1/messages", handleMessages)
   app.post("/messages", handleMessages)
 
-  return { app, config: finalConfig, claudeCodeVersion }
+  return { app, config: finalConfig, claudeCodeVersion, claudeCodeMetadata }
 }
 
 export async function startProxyServer(config: Partial<ProxyConfig> = {}) {
-  const { app, config: finalConfig, claudeCodeVersion } = createProxyServer(config)
+  const { app, config: finalConfig, claudeCodeVersion, claudeCodeMetadata } = createProxyServer(config)
   const capturePath = process.env.CLAUDE_PROXY_CAPTURE_PATH
 
   const server = Bun.serve({
@@ -173,7 +176,13 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}) {
   })
 
   console.log(`Claude Max Proxy (opencode-claude-auth server) running at http://${finalConfig.host}:${finalConfig.port}`)
-  console.log(`Claude Code parity version: ${claudeCodeVersion}`)
+  console.log(`Claude Code parity version: ${claudeCodeVersion} (source: ${claudeCodeMetadata.source})`)
+  if (claudeCodeMetadata.binaryPath) {
+    console.log(`Claude binary path: ${claudeCodeMetadata.binaryPath}`)
+  }
+  if (claudeCodeMetadata.packagePath) {
+    console.log(`Claude package path: ${claudeCodeMetadata.packagePath}`)
+  }
   console.log(`Supports: prompt caching, extended thinking, vision, tool use, PDFs, streaming`)
   if (capturePath) {
     console.log(`Redacted capture path: ${capturePath}`)

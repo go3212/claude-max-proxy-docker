@@ -13,6 +13,7 @@
   "scripts": {
     "start": "bun run ./bin/claude-proxy.ts",
     "proxy": "bun run ./bin/claude-proxy.ts",
+    "inspect:claude-code": "bun run ./bin/inspect-claude-code.ts",
     "validate:live": "bun run ./bin/validate-proxy.ts",
     "validate:capture": "bun run ./bin/validate-capture.ts",
     "test": "bun test",

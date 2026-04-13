@@ -102,6 +102,12 @@ bun run validate:capture -- ./captures/latest-request.json
 
 This replays the sanitized request shape through the current checked-out proxy code and exits non-zero if Anthropic still classifies it as third-party extra usage.
 
+Inspect which installed Claude Code identity the proxy will use:
+
+```bash
+bun run inspect:claude-code
+```
+
 ## Docker
 
 ```bash
@@ -109,11 +115,13 @@ docker compose up --build
 ```
 
 The bundled `docker-compose.yml` enables debug logging and writes the latest redacted incoming request to `./captures/latest-request.json`.
+It also requires a resolvable installed Claude Code identity instead of silently falling back to the pinned vendored version.
 
 Useful commands:
 
 ```bash
 docker compose logs -f claude-proxy
+bun run inspect:claude-code
 bun run validate:capture -- ./captures/latest-request.json
 ```
 
@@ -125,6 +133,7 @@ bun run validate:capture -- ./captures/latest-request.json
 | `CLAUDE_PROXY_HOST` | `127.0.0.1` | Proxy server host |
 | `CLAUDE_PROXY_DEBUG` | `0` | Enables proxy debug logs to stdout; `OPENCODE_CLAUDE_PROVIDER_DEBUG` remains a compatibility alias |
 | `CLAUDE_PROXY_CAPTURE_PATH` | unset | Writes the latest redacted incoming request fixture to this path |
+| `CLAUDE_PROXY_REQUIRE_INSTALLED_CLAUDE` | `false` | Fails startup if the proxy cannot resolve the installed Claude Code identity from the CLI or global package |
 | `CLAUDE_PROXY_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | Override the Claude credentials file path |
 | `CLAUDE_PROXY_CLAUDE_CODE_VERSION` | auto-detected | Highest-priority Claude Code version override |
 | `ANTHROPIC_CLI_VERSION` | auto-detected | Claude Code version for billing header and user-agent |
@@ -161,7 +170,7 @@ Your Claude Max subscription keeps its normal usage limits. This proxy does not 
 
 ### Do I need Claude CLI installed after login?
 
-Usually only for the initial `claude login`, but keeping it installed is useful because the proxy can detect the local Claude Code version and may fall back to the CLI if an OAuth refresh fails.
+Usually only for the initial `claude login`, but keeping it installed is useful because the proxy can detect the installed Claude Code version and may fall back to the CLI if an OAuth refresh fails.
 
 ## Troubleshooting
 
@@ -187,11 +196,22 @@ If you are testing with Docker Compose, inspect the live logs and the latest red
 
 ```bash
 docker compose logs -f claude-proxy
+bun run inspect:claude-code
 cat ./captures/latest-request.json
 bun run validate:capture -- ./captures/latest-request.json
 ```
 
 If `validate:live` succeeds but `validate:capture` fails, the remaining issue is in the real OpenCode request shape rather than the basic proxy credentials path.
+
+### Docker exits at startup with an installed-Claude error
+
+Run:
+
+```bash
+bun run inspect:claude-code
+```
+
+If strict mode is enabled, the proxy will now fail fast instead of silently using the vendored fallback version when it cannot resolve the installed Claude Code binary or global package version.
 
 ## License
 
