@@ -54,7 +54,10 @@ describe("server", () => {
 
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
-        headers: { "content-type": "application/json" }
+        headers: {
+          "content-type": "application/json",
+          "content-encoding": "gzip"
+        }
       })
     }) as typeof fetch
 
@@ -97,5 +100,6 @@ describe("server", () => {
     expect(forwarded.system[1]?.text).toBe(SYSTEM_IDENTITY)
     expect(forwarded.messages[0]?.content).toBe("Stay helpful\n\nhello world")
     expect(forwarded.temperature).toBeUndefined()
+    expect(response.headers.get("content-encoding")).toBeNull()
   })
 })

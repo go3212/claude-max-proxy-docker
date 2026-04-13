@@ -19,7 +19,8 @@ function buildResponseHeaders(upstreamHeaders: Headers): Headers {
       lower === "connection" ||
       lower === "keep-alive" ||
       lower === "transfer-encoding" ||
-      lower === "content-length"
+      lower === "content-length" ||
+      lower === "content-encoding"
     ) {
       continue
     }
