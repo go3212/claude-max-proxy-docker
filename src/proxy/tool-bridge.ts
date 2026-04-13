@@ -28,6 +28,41 @@ function reverseNameMap(): Record<string, string> {
 
 const OFFICIAL_TO_OPEN_NAME = reverseNameMap()
 
+function buildMcpToolName(serverName: string, toolName: string): string | null {
+  const normalizedServerName = serverName.replace(/^_+|_+$/g, "")
+  const normalizedToolName = toolName.replace(/^_+|_+$/g, "")
+
+  if (!normalizedServerName || !normalizedToolName) {
+    return null
+  }
+
+  return `mcp__${normalizedServerName}__${normalizedToolName}`
+}
+
+function normalizeImplicitMcpToolName(openName: string): string | null {
+  const prefixedServerMatch = openName.match(/^__([^_]+?)(?:__|_)(.+)$/)
+  if (prefixedServerMatch) {
+    const [, serverName = "", toolName = ""] = prefixedServerMatch
+    return buildMcpToolName(serverName, toolName)
+  }
+
+  const dynamicConnectorMatch = openName.match(/^([a-f0-9]{6,32})_([a-f0-9]{6,32})_(.+)$/i)
+  if (dynamicConnectorMatch) {
+    const [, connectorA = "", connectorB = "", toolName = ""] = dynamicConnectorMatch
+    return buildMcpToolName(
+      `${connectorA}_${connectorB}`,
+      toolName
+    )
+  }
+
+  if (openName.includes("__")) {
+    const [serverName, ...toolParts] = openName.split("__").filter(Boolean)
+    return buildMcpToolName(serverName ?? "", toolParts.join("__"))
+  }
+
+  return null
+}
+
 function resolveOfficialToolName(openName: string): string | null {
   const lower = openName.toLowerCase()
   if (OPEN_TO_OFFICIAL_NAME[lower]) {
@@ -43,14 +78,22 @@ function resolveOfficialToolName(openName: string): string | null {
   }
 
   if (openName.startsWith("mcp_")) {
-    return `mcp__${openName.slice(4)}`
+    const suffix = openName.slice(4)
+    const normalizedSuffix = normalizeImplicitMcpToolName(suffix)
+    if (normalizedSuffix) {
+      return normalizedSuffix
+    }
+
+    const prefixedServerMatch = suffix.match(/^([^_]+)_(.+)$/)
+    if (prefixedServerMatch) {
+      const [, serverName = "", toolName = ""] = prefixedServerMatch
+      return buildMcpToolName(serverName, toolName)
+    }
+
+    return suffix ? `mcp__${suffix}` : null
   }
 
-  if (openName.includes("__")) {
-    return `mcp__${openName}`
-  }
-
-  return null
+  return normalizeImplicitMcpToolName(openName)
 }
 
 function cloneValue<T>(value: T): T {

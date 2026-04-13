@@ -606,13 +606,18 @@ describe("server", () => {
             input_schema: { type: "object" }
           },
           {
-            name: "github__list_issues",
-            description: "List issues",
+            name: "__environment_get_environment",
+            description: "Read environment",
             input_schema: { type: "object" }
           },
           {
-            name: "question",
-            description: "Ask a question",
+            name: "975393dc_1af9a18e_validation_preview",
+            description: "Validation preview",
+            input_schema: { type: "object" }
+          },
+          {
+            name: "webfetch",
+            description: "Fetch a URL",
             input_schema: { type: "object" }
           }
         ]
@@ -631,7 +636,8 @@ describe("server", () => {
     expect(forwarded.system[1]?.text).toBe(SYSTEM_IDENTITY)
     expect(forwarded.tools.map((tool) => tool.name)).toEqual([
       "Bash",
-      "mcp__github__list_issues"
+      "mcp__environment__get_environment",
+      "mcp__975393dc_1af9a18e__validation_preview"
     ])
     expect(forwarded.messages[0]?.content).toEqual([
       {

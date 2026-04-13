@@ -313,13 +313,18 @@ describe("transforms", () => {
           input_schema: { type: "object" }
         },
         {
-          name: "github__list_issues",
-          description: "List issues",
+          name: "question",
+          description: "Ask a question",
           input_schema: { type: "object" }
         },
         {
-          name: "question",
-          description: "Ask a question",
+          name: "__environment_get_environment",
+          description: "Read environment",
+          input_schema: { type: "object" }
+        },
+        {
+          name: "975393dc_1af9a18e_validation_preview",
+          description: "Validation preview",
           input_schema: { type: "object" }
         }
       ]
@@ -331,11 +336,19 @@ describe("transforms", () => {
     const transformed = JSON.parse(result.body) as { tools: Array<{ name?: string }> }
     expect(transformed.tools.map((tool) => tool.name)).toEqual([
       "Bash",
-      "mcp__github__list_issues"
+      "mcp__environment__get_environment",
+      "mcp__975393dc_1af9a18e__validation_preview"
     ])
     expect(result.toolBridge.mappedToolNames).toEqual([
       { openName: "bash", officialName: "Bash" },
-      { openName: "github__list_issues", officialName: "mcp__github__list_issues" }
+      {
+        openName: "__environment_get_environment",
+        officialName: "mcp__environment__get_environment"
+      },
+      {
+        openName: "975393dc_1af9a18e_validation_preview",
+        officialName: "mcp__975393dc_1af9a18e__validation_preview"
+      }
     ])
     expect(result.toolBridge.unsupportedToolNames).toEqual(["question"])
   })
