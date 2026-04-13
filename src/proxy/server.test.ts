@@ -129,6 +129,10 @@ describe("server", () => {
       proxy: {
         outboundRequest: {
           headers: Record<string, string>
+          body: {
+            system: Array<{ text?: string }>
+            messages: Array<{ content?: Array<{ type?: string; text?: string }> }>
+          }
           droppedIncomingHeaders: string[]
           droppedIncomingBetas: string[]
         }
@@ -143,6 +147,8 @@ describe("server", () => {
     expect(captured.request.body.messages[0]?.role).toBe("user")
     expect(captured.request.body.messages[0]?.content).toMatch(/\[redacted-user-1\]/)
     expect(captured.proxy.outboundRequest.headers.authorization).toBe("[redacted-header-1]")
+    expect(captured.proxy.outboundRequest.body.system[0]?.text?.startsWith("[redacted-system-")).toBe(true)
+    expect(captured.proxy.outboundRequest.body.messages[0]?.content?.[0]?.type).toBe("text")
     expect(captured.proxy.outboundRequest.headers["x-app"]).toBe("cli")
     expect(captured.proxy.outboundRequest.droppedIncomingHeaders).toContain("x-session-affinity")
     expect(captured.proxy.outboundRequest.droppedIncomingBetas).toEqual([

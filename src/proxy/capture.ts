@@ -56,6 +56,7 @@ export interface CapturedRequestFixture {
     summary: TransformSummary
     outboundRequest: {
       headers: Record<string, string>
+      body: unknown
       droppedIncomingHeaders: string[]
       droppedIncomingBetas: string[]
     }
@@ -75,6 +76,7 @@ export interface BuildCaptureFixtureOptions {
   betas: string[]
   summary: TransformSummary
   outgoingHeaders: Headers
+  outgoingBody: string
   droppedIncomingHeaders: string[]
   droppedIncomingBetas: string[]
 }
@@ -357,6 +359,7 @@ export function buildCapturedRequestFixture(
       summary: { ...options.summary },
       outboundRequest: {
         headers: sanitizeHeaders(options.outgoingHeaders),
+        body: sanitizeIncomingRequestBody(options.outgoingBody),
         droppedIncomingHeaders: [...options.droppedIncomingHeaders],
         droppedIncomingBetas: [...options.droppedIncomingBetas]
       }

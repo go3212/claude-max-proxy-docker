@@ -116,6 +116,16 @@ describe("capture", () => {
         "anthropic-beta": "prompt-caching-scope-2026-01-05",
         "x-app": "cli"
       }),
+      outgoingBody: JSON.stringify({
+        model: "claude-sonnet-4-5-20250929",
+        system: [
+          {
+            type: "text",
+            text: "x-anthropic-billing-header: cc_version=2.1.104.abc; cc_entrypoint=cli; cch=12345;"
+          }
+        ],
+        messages: [{ role: "user", content: "hello world" }]
+      }),
       droppedIncomingHeaders: ["x-session-affinity"],
       droppedIncomingBetas: ["structured-outputs-2025-11-13"]
     })
@@ -129,6 +139,7 @@ describe("capture", () => {
     expect(reloaded.proxy.summary.textSystemReducedToCoreOnly).toBe(true)
     expect(reloaded.proxy.betas).toEqual(["prompt-caching-scope-2026-01-05"])
     expect(reloaded.proxy.outboundRequest.headers.authorization).toBe("[redacted-header-1]")
+    expect(JSON.stringify(reloaded.proxy.outboundRequest.body)).not.toContain("hello world")
     expect(reloaded.proxy.outboundRequest.headers["x-app"]).toBe("cli")
     expect(reloaded.proxy.outboundRequest.droppedIncomingHeaders).toEqual(["x-session-affinity"])
     expect(reloaded.proxy.outboundRequest.droppedIncomingBetas).toEqual(["structured-outputs-2025-11-13"])

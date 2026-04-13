@@ -13,6 +13,8 @@
   "scripts": {
     "start": "bun run ./bin/claude-proxy.ts",
     "proxy": "bun run ./bin/claude-proxy.ts",
+    "capture:official-claude": "bun run ./bin/capture-official-claude.ts",
+    "diff:official-vs-proxy": "bun run ./bin/diff-official-vs-proxy.ts",
     "inspect:claude-code": "bun run ./bin/inspect-claude-code.ts",
     "validate:live": "bun run ./bin/validate-proxy.ts",
     "validate:capture": "bun run ./bin/validate-capture.ts",
@@ -30,6 +32,7 @@
   "files": [
     "bin/",
     "src/proxy/",
+    "src/official-claude/",
     "src/logger.ts"
   ],
   "keywords": [

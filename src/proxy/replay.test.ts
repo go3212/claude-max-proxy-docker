@@ -102,6 +102,17 @@ describe("replay validation", () => {
         "anthropic-beta": "prompt-caching-scope-2026-01-05",
         "x-app": "cli"
       }),
+      outgoingBody: JSON.stringify({
+        model: "claude-sonnet-4-5-20250929",
+        stream: true,
+        system: [
+          {
+            type: "text",
+            text: "x-anthropic-billing-header: cc_version=2.1.104.abc; cc_entrypoint=cli; cch=12345;"
+          }
+        ],
+        messages: [{ role: "user", content: "hello world" }]
+      }),
       droppedIncomingHeaders: ["x-session-affinity"],
       droppedIncomingBetas: ["client-beta", "structured-outputs-2025-11-13"]
     })

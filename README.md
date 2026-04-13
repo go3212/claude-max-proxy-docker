@@ -102,6 +102,27 @@ bun run validate:capture -- ./captures/latest-request.json
 
 This replays the sanitized request shape through the current checked-out proxy code and exits non-zero if Anthropic still classifies it as third-party extra usage.
 
+Capture a real outbound request from the installed official Claude CLI:
+
+```bash
+bun run capture:official-claude -- -p "Reply with exactly OK."
+```
+
+This runs your installed `claude` binary under a Node `--require` hook and writes:
+
+- `./captures/official-claude/latest-raw.json`
+- `./captures/official-claude/latest-redacted.json`
+
+The raw file keeps the exact official request locally for diffing. The redacted file preserves request shape, headers, betas, tool names, and schema structure while stripping auth values and free-form prompt text.
+
+Diff the latest official redacted capture against the proxy's latest capture:
+
+```bash
+bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.json ./captures/latest-request.json
+```
+
+The diff normalizes dynamic request ids and focuses on meaningful parity differences such as user-agent, beta set, top-level body fields, system/message shape, and tool schema structure.
+
 Inspect which installed Claude Code identity the proxy will use:
 
 ```bash
@@ -123,6 +144,8 @@ Useful commands:
 docker compose logs -f claude-proxy
 bun run inspect:claude-code
 bun run validate:capture -- ./captures/latest-request.json
+docker compose run --rm --entrypoint bun claude-proxy run ./bin/capture-official-claude.ts -- -p "Reply with exactly OK."
+bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.json ./captures/latest-request.json
 ```
 
 ## Configuration
@@ -134,6 +157,9 @@ bun run validate:capture -- ./captures/latest-request.json
 | `CLAUDE_PROXY_DEBUG` | `0` | Enables proxy debug logs to stdout; `OPENCODE_CLAUDE_PROVIDER_DEBUG` remains a compatibility alias |
 | `CLAUDE_PROXY_CAPTURE_PATH` | unset | Writes the latest redacted incoming request fixture to this path |
 | `CLAUDE_PROXY_REQUIRE_INSTALLED_CLAUDE` | `false` | Fails startup if the proxy cannot resolve the installed Claude Code identity from the CLI or global package |
+| `CLAUDE_OFFICIAL_CAPTURE_DIR` | auto | Base directory for official Claude raw/redacted capture files |
+| `CLAUDE_OFFICIAL_CAPTURE_RAW_PATH` | auto | Override the exact raw official Claude capture file path |
+| `CLAUDE_OFFICIAL_CAPTURE_REDACTED_PATH` | auto | Override the exact redacted official Claude capture file path |
 | `CLAUDE_PROXY_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | Override the Claude credentials file path |
 | `CLAUDE_PROXY_CLAUDE_CODE_VERSION` | auto-detected | Highest-priority Claude Code version override |
 | `ANTHROPIC_CLI_VERSION` | auto-detected | Claude Code version for billing header and user-agent |
@@ -151,6 +177,8 @@ bun run validate:capture -- ./captures/latest-request.json
 5. **Proxy** pipes the response directly back to OpenCode
 
 When `CLAUDE_PROXY_CAPTURE_PATH` is set, the proxy also writes a redacted copy of the original incoming request plus transform metadata so the exact OpenCode shape can be replayed locally.
+
+When `capture:official-claude` is used, the installed `/usr/bin/claude` process is launched under a Node runtime hook that records only outbound `https://api.anthropic.com/v1/messages` traffic. That produces a raw local capture and a shareable redacted copy for parity diffing against the proxy.
 
 The server vendors the core `opencode-claude-auth` logic for signing, beta selection, request transforms, and token refresh, but exposes it as a normal local HTTP proxy instead of an OpenCode plugin.
 
@@ -202,6 +230,17 @@ bun run validate:capture -- ./captures/latest-request.json
 ```
 
 If `validate:live` succeeds but `validate:capture` fails, the remaining issue is in the real OpenCode request shape rather than the basic proxy credentials path.
+
+### How do I compare the proxy with real Claude Code?
+
+Capture one request from the installed Claude CLI and diff it against the latest proxy capture:
+
+```bash
+bun run capture:official-claude -- -p "Reply with exactly OK."
+bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.json ./captures/latest-request.json
+```
+
+If the diff reports a mismatch, that output is the next source of truth for header/body parity changes.
 
 ### Docker exits at startup with an installed-Claude error
 

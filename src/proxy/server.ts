@@ -94,6 +94,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
           betas: headerBuild.betas,
           summary: transformedBody.summary,
           outgoingHeaders: headerBuild.headers,
+          outgoingBody: transformedBody.body,
           droppedIncomingHeaders: headerBuild.droppedIncomingHeaders,
           droppedIncomingBetas: headerBuild.droppedIncomingBetas
         })
