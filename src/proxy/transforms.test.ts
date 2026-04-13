@@ -6,6 +6,7 @@ import {
   type AnthropicRequestBody
 } from "./transforms"
 import type { OfficialClaudeScaffold } from "./official-scaffold"
+import type { TransformOptions } from "./transforms"
 
 function cloneBody<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -66,6 +67,17 @@ function createScaffold(): OfficialClaudeScaffold {
   }
 }
 
+function createTransformOptions(
+  systemMode: "official" | "hermes-minimal" = "official"
+): TransformOptions {
+  return {
+    version: "2.1.104",
+    entrypoint: "sdk-cli",
+    scaffold: createScaffold(),
+    systemMode
+  }
+}
+
 describe("transforms", () => {
   test("injects billing, keeps identity, and relocates extra system text", () => {
     const body: AnthropicRequestBody = {
@@ -89,11 +101,7 @@ describe("transforms", () => {
       temperature: 0.2
     }
 
-    const transformed = applyClaudeCodeRequestTransforms(cloneBody(body), {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    const transformed = applyClaudeCodeRequestTransforms(cloneBody(body), createTransformOptions())
 
     const system = transformed.system as Array<{ text?: string }>
     expect(system).toHaveLength(5)
@@ -126,11 +134,7 @@ describe("transforms", () => {
       model: "claude-sonnet-4-5-20250929"
     }
 
-    const transformed = applyClaudeCodeRequestTransforms(cloneBody(body), {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    const transformed = applyClaudeCodeRequestTransforms(cloneBody(body), createTransformOptions())
 
     const system = transformed.system as Array<{ text?: string }>
     expect(system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
@@ -159,11 +163,7 @@ describe("transforms", () => {
       model: "claude-sonnet-4-5-20250929"
     }
 
-    const transformed = applyClaudeCodeRequestTransforms(cloneBody(body), {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    const transformed = applyClaudeCodeRequestTransforms(cloneBody(body), createTransformOptions())
 
     const content = transformed.messages?.[0]?.content
     expect(Array.isArray(content)).toBe(true)
@@ -178,17 +178,9 @@ describe("transforms", () => {
       system: "plain system",
       messages: [{ role: "user", content: "hello world" }],
       model: "claude-sonnet-4-5-20250929"
-    }, {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    }, createTransformOptions())
 
-    const twice = applyClaudeCodeRequestTransforms(cloneBody(once), {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    const twice = applyClaudeCodeRequestTransforms(cloneBody(once), createTransformOptions())
 
     const system = twice.system as Array<{ text?: string }>
     expect(system).toHaveLength(5)
@@ -203,11 +195,7 @@ describe("transforms", () => {
       model: "claude-haiku-4-5-20251001",
       output_config: { effort: "high" },
       thinking: { effort: "high" }
-    }, {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    }, createTransformOptions())
 
     expect(transformed.output_config).toBeUndefined()
     expect(transformed.thinking).toBeUndefined()
@@ -224,11 +212,7 @@ describe("transforms", () => {
       ],
       messages: [{ role: "user", content: "hello world" }],
       model: "claude-sonnet-4-5-20250929"
-    }, {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    }, createTransformOptions())
 
     const system = transformed.system as Array<{ type?: string; text?: string; source?: string }>
     expect(system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
@@ -241,18 +225,14 @@ describe("transforms", () => {
       model: "claude-sonnet-4-5-20250929",
       system: "plain system",
       messages: [{ role: "user", content: "hello world" }]
-    }), {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    }), createTransformOptions())
 
     expect(result.summary).toEqual({
       movedSystemTextCount: 1,
       hadFirstUserMessage: true,
       hadFirstUserTextBlock: true,
       finalSystemTextCount: 5,
-      textSystemReducedToCoreOnly: true
+      textSystemReducedToCoreOnly: false
     })
     expect(JSON.stringify(result.summary)).not.toContain("plain system")
     expect(JSON.stringify(result.summary)).not.toContain("hello world")
@@ -281,17 +261,82 @@ describe("transforms", () => {
           }
         }
       ]
-    }), {
-      version: "2.1.104",
-      entrypoint: "sdk-cli",
-      scaffold: createScaffold()
-    })
+    }), createTransformOptions())
 
     const transformed = JSON.parse(result.body) as { tools: Array<{ name?: string; description?: string }> }
     expect(transformed.tools[0]?.name).toBe("Bash")
-    expect(transformed.tools[0]?.description).toBe("Run shell commands")
+    expect(transformed.tools[0]?.description).toBe("Run bash")
     expect(transformed.tools[1]?.name).toBe("question")
     expect(result.toolBridge.mappedToolNames).toEqual([{ openName: "bash", officialName: "Bash" }])
+    expect(result.toolBridge.unsupportedToolNames).toEqual(["question"])
+  })
+
+  test("reduces system to billing and identity only in hermes-minimal mode", () => {
+    const transformed = applyClaudeCodeRequestTransforms({
+      system: [
+        {
+          type: "text",
+          text: `${SYSTEM_IDENTITY}\nStay helpful.`
+        },
+        {
+          type: "text",
+          text: "Extra system guidance"
+        }
+      ],
+      messages: [{ role: "user", content: "hello world" }],
+      model: "claude-opus-4-6-20260101"
+    }, createTransformOptions("hermes-minimal"))
+
+    const system = transformed.system as Array<{ type?: string; text?: string }>
+    expect(system).toHaveLength(2)
+    expect(system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
+    expect(system[1]?.text).toBe(SYSTEM_IDENTITY)
+    expect(transformed.messages?.[0]?.content).toEqual([
+      {
+        type: "text",
+        text:
+          "<system-reminder>\nStay helpful.\n</system-reminder>\n\n" +
+          "<system-reminder>\nExtra system guidance\n</system-reminder>\n\n" +
+          "hello world"
+      }
+    ])
+  })
+
+  test("drops unsupported tools and normalizes MCP names in hermes-minimal mode", () => {
+    const result = transformBodyString(JSON.stringify({
+      model: "claude-opus-4-6",
+      messages: [{ role: "user", content: "hello world" }],
+      tools: [
+        {
+          name: "bash",
+          description: "Run bash",
+          input_schema: { type: "object" }
+        },
+        {
+          name: "github__list_issues",
+          description: "List issues",
+          input_schema: { type: "object" }
+        },
+        {
+          name: "question",
+          description: "Ask a question",
+          input_schema: { type: "object" }
+        }
+      ]
+    }), {
+      ...createTransformOptions("hermes-minimal"),
+      unsupportedToolMode: "drop"
+    })
+
+    const transformed = JSON.parse(result.body) as { tools: Array<{ name?: string }> }
+    expect(transformed.tools.map((tool) => tool.name)).toEqual([
+      "Bash",
+      "mcp__github__list_issues"
+    ])
+    expect(result.toolBridge.mappedToolNames).toEqual([
+      { openName: "bash", officialName: "Bash" },
+      { openName: "github__list_issues", officialName: "mcp__github__list_issues" }
+    ])
     expect(result.toolBridge.unsupportedToolNames).toEqual(["question"])
   })
 })

@@ -8,6 +8,7 @@ services:
       - CLAUDE_PROXY_PORT=3456
       - CLAUDE_PROXY_DEBUG=1
       - CLAUDE_PROXY_CAPTURE_PATH=/captures/latest-request.json
+      - CLAUDE_PROXY_SYSTEM_MODE=hermes-minimal
       - CLAUDE_PROXY_REQUIRE_INSTALLED_CLAUDE=1
     volumes:
       - claude-data:/root/.claude

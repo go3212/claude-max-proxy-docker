@@ -110,6 +110,14 @@ bun run capture:official-claude -- -p "Reply with exactly OK."
 
 When `./captures/official-claude/latest-raw.json` exists, the proxy uses it as the source of truth for the outbound Claude scaffold: `?beta=true`, `sdk-cli` user-agent shape, `x-stainless-*` headers, system scaffold, and other top-level Claude Code request fields.
 
+If you want to keep the official Claude headers/body envelope but reduce `system[]` to Hermes-style core entries, set:
+
+```bash
+CLAUDE_PROXY_SYSTEM_MODE=hermes-minimal
+```
+
+`official` remains the default. `hermes-minimal` is experimental and drops unsupported non-Claude tools instead of retrying them.
+
 Capture a real outbound request from the installed official Claude CLI:
 
 ```bash
@@ -168,13 +176,14 @@ bun run diff:official-vs-proxy -- ./captures/official-claude/latest-redacted.jso
 | `CLAUDE_PROXY_REQUIRE_INSTALLED_CLAUDE` | `false` | Fails startup if the proxy cannot resolve the installed Claude Code identity from the CLI or global package |
 | `CLAUDE_PROXY_OFFICIAL_CAPTURE_RAW_PATH` | auto | Optional raw official Claude capture file used as the source of truth for the outbound Claude scaffold |
 | `CLAUDE_PROXY_METADATA_USER_ID` | unset | Optional explicit override for `metadata.user_id` in the outbound Claude scaffold |
+| `CLAUDE_PROXY_SYSTEM_MODE` | `official` | `official` keeps the captured Claude scaffold; `hermes-minimal` keeps official headers/betas but reduces `system[]` to billing + identity and drops unsupported tools |
 | `CLAUDE_OFFICIAL_CAPTURE_DIR` | auto | Base directory for official Claude raw/redacted capture files |
 | `CLAUDE_OFFICIAL_CAPTURE_RAW_PATH` | auto | Override the exact raw official Claude capture file path |
 | `CLAUDE_OFFICIAL_CAPTURE_REDACTED_PATH` | auto | Override the exact redacted official Claude capture file path |
 | `CLAUDE_PROXY_CREDENTIALS_PATH` | `~/.claude/.credentials.json` | Override the Claude credentials file path |
 | `CLAUDE_PROXY_CLAUDE_CODE_VERSION` | auto-detected | Highest-priority Claude Code version override |
 | `ANTHROPIC_CLI_VERSION` | auto-detected | Claude Code version for billing header and user-agent |
-| `ANTHROPIC_USER_AGENT` | `claude-cli/{version} (external, cli)` | Full user-agent override |
+| `ANTHROPIC_USER_AGENT` | `claude-cli/{version} (external, sdk-cli)` | Full user-agent override |
 | `ANTHROPIC_BETA_FLAGS` | built-in Claude Code beta set | Comma-separated beta override |
 | `ANTHROPIC_ENABLE_1M_CONTEXT` | `false` | Adds the 1M context beta for supported Sonnet/Opus models |
 | `CLAUDE_CODE_ENTRYPOINT` | `cli` | Billing header entrypoint value |
@@ -192,6 +201,8 @@ When `CLAUDE_PROXY_CAPTURE_PATH` is set, the proxy also writes a redacted copy o
 When `capture:official-claude` is used, the installed `/usr/bin/claude` process is launched under a Node runtime hook that records only outbound `https://api.anthropic.com/v1/messages` traffic. That produces a raw local capture and a shareable redacted copy for parity diffing against the proxy.
 
 If a raw official capture is available, the proxy uses it at runtime as the scaffold for official Claude Code request structure and layers the Hermes-style billing/reminder transform on top.
+
+`CLAUDE_PROXY_SYSTEM_MODE=official` keeps that scaffolded `system[]` layout. `CLAUDE_PROXY_SYSTEM_MODE=hermes-minimal` keeps the official outer request shape but reduces `system[]` to the billing header plus Claude Code identity, moves extra system text into the first user message as `<system-reminder>`, normalizes supported tool names, and drops unsupported tools up front.
 
 The server vendors the core `opencode-claude-auth` logic for signing, beta selection, request transforms, and token refresh, but exposes it as a normal local HTTP proxy instead of an OpenCode plugin.
 

@@ -2,7 +2,6 @@ import { getModelOverride } from "./model-config"
 import { buildBillingHeaderValue } from "./signing"
 import {
   cloneOfficialClaudeBodyTemplate,
-  getOfficialToolTemplateMap,
   type OfficialClaudeScaffold
 } from "./official-scaffold"
 import {
@@ -10,6 +9,7 @@ import {
   type ToolBridgeResult,
   type UnsupportedToolMode
 } from "./tool-bridge"
+import type { ClaudeProxySystemMode } from "./system-mode"
 
 const BILLING_PREFIX = "x-anthropic-billing-header"
 
@@ -53,6 +53,7 @@ export interface TransformOptions {
   version: string
   entrypoint: string
   scaffold: OfficialClaudeScaffold
+  systemMode?: ClaudeProxySystemMode
   unsupportedToolMode?: UnsupportedToolMode
   metadataUserId?: string | null
 }
@@ -196,23 +197,28 @@ function summarizeTransformedBody(
   firstUserSummary: Pick<TransformSummary, "hadFirstUserMessage" | "hadFirstUserTextBlock">
 ): TransformSummary {
   const systemEntries = normalizeSystemEntries(body.system)
-  const finalSystemTextCount = systemEntries.filter((entry) => {
+  const textEntries = systemEntries.filter((entry) => {
     if (typeof entry === "string") return entry.length > 0
     return entry.type === "text" && typeof entry.text === "string" && entry.text.length > 0
-  }).length
+  })
+  const finalSystemTextCount = textEntries.length
 
   return {
     movedSystemTextCount,
     hadFirstUserMessage: firstUserSummary.hadFirstUserMessage,
     hadFirstUserTextBlock: firstUserSummary.hadFirstUserTextBlock,
     finalSystemTextCount,
-    textSystemReducedToCoreOnly: movedSystemTextCount >= 0
+    textSystemReducedToCoreOnly: textEntries.every((entry) => {
+      const text = typeof entry === "string" ? entry : entry.text ?? ""
+      return text.startsWith(BILLING_PREFIX) || text === SYSTEM_IDENTITY
+    })
   }
 }
 
 function extractIncomingSystem(
   system: AnthropicRequestBody["system"],
-  scaffold: OfficialClaudeScaffold
+  scaffold: OfficialClaudeScaffold,
+  systemMode: ClaudeProxySystemMode
 ): {
   movedTexts: string[]
   preservedEntries: Array<SystemEntry | string>
@@ -220,9 +226,11 @@ function extractIncomingSystem(
   const movedTexts: string[] = []
   const preservedEntries: Array<SystemEntry | string> = []
   const scaffoldTextEntries = new Set(
-    normalizeSystemEntries(scaffold.bodyTemplate.system)
-      .map((entry) => typeof entry === "string" ? entry : entry.text ?? "")
-      .filter((text) => text && !text.startsWith(BILLING_PREFIX))
+    systemMode === "official"
+      ? normalizeSystemEntries(scaffold.bodyTemplate.system)
+          .map((entry) => typeof entry === "string" ? entry : entry.text ?? "")
+          .filter((text) => text && !text.startsWith(BILLING_PREFIX))
+      : []
   )
 
   for (const entry of normalizeSystemEntries(system)) {
@@ -268,6 +276,20 @@ function extractIncomingSystem(
     movedTexts,
     preservedEntries
   }
+}
+
+function buildHermesMinimalSystem(
+  billingText: string,
+  preservedIncomingEntries: Array<SystemEntry | string>
+): Array<SystemEntry | string> {
+  return [
+    {
+      type: "text",
+      text: billingText
+    },
+    { type: "text", text: SYSTEM_IDENTITY },
+    ...preservedIncomingEntries
+  ]
 }
 
 function buildScaffoldSystem(
@@ -317,6 +339,7 @@ export function applyClaudeCodeRequestTransforms(
   parsed: AnthropicRequestBody,
   options: TransformOptions
 ): AnthropicRequestBody & { __transformSummary__?: TransformSummary; __toolBridge__?: ToolBridgeResult } {
+  const systemMode = options.systemMode ?? "official"
   const unsupportedToolMode = options.unsupportedToolMode ?? "keep"
   const outgoing = cloneOfficialClaudeBodyTemplate(options.scaffold)
 
@@ -339,7 +362,6 @@ export function applyClaudeCodeRequestTransforms(
 
   const toolBridge = applyRequestToolBridge(
     outgoing as Record<string, unknown>,
-    getOfficialToolTemplateMap(options.scaffold),
     unsupportedToolMode
   )
 
@@ -356,9 +378,11 @@ export function applyClaudeCodeRequestTransforms(
 
   applyMetadata(outgoing, options.scaffold, options.metadataUserId)
 
-  const extractedSystem = extractIncomingSystem(parsed.system, options.scaffold)
+  const extractedSystem = extractIncomingSystem(parsed.system, options.scaffold, systemMode)
   const billingText = buildBillingHeaderValue(outgoing.messages ?? [], options.version, options.entrypoint)
-  outgoing.system = buildScaffoldSystem(options.scaffold, billingText, extractedSystem.preservedEntries)
+  outgoing.system = systemMode === "hermes-minimal"
+    ? buildHermesMinimalSystem(billingText, extractedSystem.preservedEntries)
+    : buildScaffoldSystem(options.scaffold, billingText, extractedSystem.preservedEntries)
   const firstUserSummary = prependToFirstUserMessage(
     outgoing.messages ?? [],
     extractedSystem.movedTexts

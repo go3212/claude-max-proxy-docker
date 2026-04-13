@@ -12,6 +12,7 @@ import { getValidCredentials } from "./credentials"
 import { prepareRequestHeaders } from "./headers"
 import { transformBodyString } from "./transforms"
 import { resolveOfficialClaudeScaffold } from "./official-scaffold"
+import { resolveClaudeProxySystemMode } from "./system-mode"
 import {
   rewriteResponseJsonToolNames,
   rewriteSseBodyToolNames
@@ -64,6 +65,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
       const rawBody = await c.req.text()
       const scaffold = await resolveOfficialClaudeScaffold()
       const claudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT ?? scaffold.entrypoint
+      const systemMode = resolveClaudeProxySystemMode()
       const credentials = await getValidCredentials()
 
       const metadataUserId =
@@ -71,11 +73,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         null
 
       const buildRequestAttempt = (unsupportedToolMode: "keep" | "drop") => {
+        const effectiveUnsupportedToolMode = systemMode === "hermes-minimal"
+          ? "drop"
+          : unsupportedToolMode
         const transformedBody = transformBodyString(rawBody, {
           version: claudeCodeVersion,
           entrypoint: claudeCodeEntrypoint,
           scaffold,
-          unsupportedToolMode,
+          systemMode,
+          unsupportedToolMode: effectiveUnsupportedToolMode,
           metadataUserId
         })
 
@@ -113,10 +119,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
           rawBody,
           claudeCodeVersion,
           entrypoint: claudeCodeEntrypoint,
+          systemMode,
           modelId: transformedBody.modelId,
           stream: transformedBody.stream,
           transformed: transformedBody.transformed,
           betas: headerBuild.betas,
+          mappedTools: transformedBody.toolBridge.mappedToolNames,
+          unsupportedToolNames: transformedBody.toolBridge.unsupportedToolNames,
           summary: transformedBody.summary,
           outgoingHeaders: headerBuild.headers,
           outgoingBody: transformedBody.body,
@@ -145,6 +154,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         versionSource: claudeCodeMetadata.source,
         scaffoldSource: scaffold.source,
         scaffoldPath: scaffold.capturePath,
+        systemMode,
         entrypoint: claudeCodeEntrypoint,
         upstreamUrl: headerBuild.upstreamUrl,
         betas: headerBuild.betas,
@@ -168,6 +178,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
       if (
         !upstream.ok &&
         validationSummary?.isThirdPartyUsage &&
+        systemMode !== "hermes-minimal" &&
         transformedBody.toolBridge.unsupportedToolNames.length > 0
       ) {
         claudeLog("proxy.retry.unsupportedToolsDropped", {
@@ -195,7 +206,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         errorMessage: validationSummary?.errorMessage ?? null,
         message: validationSummary?.message ?? null,
         mappedTools: transformedBody.toolBridge.mappedToolNames,
-        unsupportedTools: transformedBody.toolBridge.unsupportedToolNames
+        unsupportedTools: transformedBody.toolBridge.unsupportedToolNames,
+        systemMode
       })
 
       const responseHeaders = buildResponseHeaders(upstream.headers)

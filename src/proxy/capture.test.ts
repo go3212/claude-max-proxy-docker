@@ -100,10 +100,13 @@ describe("capture", () => {
       }),
       claudeCodeVersion: "2.1.104",
       entrypoint: "cli",
+      systemMode: "official",
       modelId: "claude-sonnet-4-5-20250929",
       stream: false,
       transformed: true,
       betas: ["prompt-caching-scope-2026-01-05"],
+      mappedTools: [{ openName: "bash", officialName: "Bash" }],
+      unsupportedToolNames: ["question"],
       summary: {
         movedSystemTextCount: 1,
         hadFirstUserMessage: true,
@@ -136,6 +139,9 @@ describe("capture", () => {
     expect(reloaded.request.headers.authorization).toMatch(/\[redacted-header-1\]/)
     expect(reloaded.request.headers["x-api-key"]).toMatch(/\[redacted-header-2\]/)
     expect(JSON.stringify(reloaded.request.body)).not.toContain("hello world")
+    expect(reloaded.proxy.systemMode).toBe("official")
+    expect(reloaded.proxy.mappedTools).toEqual([{ openName: "bash", officialName: "Bash" }])
+    expect(reloaded.proxy.unsupportedToolNames).toEqual(["question"])
     expect(reloaded.proxy.summary.textSystemReducedToCoreOnly).toBe(true)
     expect(reloaded.proxy.betas).toEqual(["prompt-caching-scope-2026-01-05"])
     expect(reloaded.proxy.outboundRequest.headers.authorization).toBe("[redacted-header-1]")

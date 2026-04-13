@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
+import type { ClaudeProxySystemMode } from "./system-mode"
 import type { TransformSummary } from "./transforms"
+import type { ToolBridgeResult } from "./tool-bridge"
 
 const CAPTURE_SCHEMA_VERSION = 1
 const SENSITIVE_HEADER_NAMES = new Set([
@@ -49,10 +51,13 @@ export interface CapturedRequestFixture {
   proxy: {
     claudeCodeVersion: string
     entrypoint: string
+    systemMode: ClaudeProxySystemMode
     modelId: string
     stream: boolean
     transformed: boolean
     betas: string[]
+    mappedTools: ToolBridgeResult["mappedToolNames"]
+    unsupportedToolNames: string[]
     summary: TransformSummary
     outboundRequest: {
       headers: Record<string, string>
@@ -70,10 +75,13 @@ export interface BuildCaptureFixtureOptions {
   rawBody: string
   claudeCodeVersion: string
   entrypoint: string
+  systemMode: ClaudeProxySystemMode
   modelId: string
   stream: boolean
   transformed: boolean
   betas: string[]
+  mappedTools: ToolBridgeResult["mappedToolNames"]
+  unsupportedToolNames: string[]
   summary: TransformSummary
   outgoingHeaders: Headers
   outgoingBody: string
@@ -352,10 +360,13 @@ export function buildCapturedRequestFixture(
     proxy: {
       claudeCodeVersion: options.claudeCodeVersion,
       entrypoint: options.entrypoint,
+      systemMode: options.systemMode,
       modelId: options.modelId,
       stream: options.stream,
       transformed: options.transformed,
       betas: [...options.betas],
+      mappedTools: options.mappedTools.map((item) => ({ ...item })),
+      unsupportedToolNames: [...options.unsupportedToolNames],
       summary: { ...options.summary },
       outboundRequest: {
         headers: sanitizeHeaders(options.outgoingHeaders),

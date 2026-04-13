@@ -16,6 +16,7 @@ const originalOfficialCapturePath = process.env.CLAUDE_PROXY_OFFICIAL_CAPTURE_RA
 const originalBetaFlags = process.env.ANTHROPIC_BETA_FLAGS
 const originalEnable1m = process.env.ANTHROPIC_ENABLE_1M_CONTEXT
 const originalUserAgent = process.env.ANTHROPIC_USER_AGENT
+const originalSystemMode = process.env.CLAUDE_PROXY_SYSTEM_MODE
 const originalFetch = globalThis.fetch
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -35,6 +36,7 @@ afterEach(() => {
   restoreEnv("ANTHROPIC_BETA_FLAGS", originalBetaFlags)
   restoreEnv("ANTHROPIC_ENABLE_1M_CONTEXT", originalEnable1m)
   restoreEnv("ANTHROPIC_USER_AGENT", originalUserAgent)
+  restoreEnv("CLAUDE_PROXY_SYSTEM_MODE", originalSystemMode)
   globalThis.fetch = originalFetch
   resetCredentialCache()
   resetResolvedClaudeCodeVersion()
@@ -54,6 +56,7 @@ describe("server", () => {
     delete process.env.ANTHROPIC_BETA_FLAGS
     delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
     delete process.env.ANTHROPIC_USER_AGENT
+    delete process.env.CLAUDE_PROXY_SYSTEM_MODE
 
     const credentials: ClaudeCredentials = {
       claudeAiOauth: {
@@ -239,6 +242,9 @@ describe("server", () => {
         }
       }
       proxy: {
+        systemMode: string
+        mappedTools: Array<{ openName: string; officialName: string }>
+        unsupportedToolNames: string[]
         outboundRequest: {
           headers: Record<string, string>
           body: {
@@ -263,12 +269,15 @@ describe("server", () => {
     expect(captured.proxy.outboundRequest.body.messages[0]?.content?.[0]?.type).toBe("text")
     expect(captured.proxy.outboundRequest.headers["x-app"]).toBe("cli")
     expect(captured.proxy.outboundRequest.headers["accept"]).toBe("application/json")
+    expect(captured.proxy.systemMode).toBe("official")
+    expect(captured.proxy.mappedTools).toEqual([])
+    expect(captured.proxy.unsupportedToolNames).toEqual([])
     expect(captured.proxy.outboundRequest.droppedIncomingHeaders).toContain("x-session-affinity")
     expect(captured.proxy.outboundRequest.droppedIncomingBetas).toEqual([
       "client-beta",
       "structured-outputs-2025-11-13"
     ])
-    expect(captured.proxy.summary.textSystemReducedToCoreOnly).toBe(true)
+    expect(captured.proxy.summary.textSystemReducedToCoreOnly).toBe(false)
   })
 
   test("summarizes streamed upstream errors in debug logs", async () => {
@@ -282,6 +291,7 @@ describe("server", () => {
     delete process.env.ANTHROPIC_BETA_FLAGS
     delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
     delete process.env.ANTHROPIC_USER_AGENT
+    delete process.env.CLAUDE_PROXY_SYSTEM_MODE
 
     const credentials: ClaudeCredentials = {
       claudeAiOauth: {
@@ -383,6 +393,7 @@ describe("server", () => {
     delete process.env.ANTHROPIC_BETA_FLAGS
     delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
     delete process.env.ANTHROPIC_USER_AGENT
+    delete process.env.CLAUDE_PROXY_SYSTEM_MODE
 
     const credentials: ClaudeCredentials = {
       claudeAiOauth: {
@@ -512,5 +523,121 @@ describe("server", () => {
     expect(seenBodies[1]?.tools?.map((tool) => tool.name)).toEqual(["Bash"])
     expect(body).toContain('"name":"bash"')
     expect(body).not.toContain('"name":"Bash"')
+  })
+
+  test("uses hermes-minimal mode to reduce system and drop unsupported tools immediately", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "claude-max-proxy-hermes-minimal-"))
+    const credentialsPath = join(tempDir, "credentials.json")
+    const officialCapturePath = join(tempDir, "official-raw.json")
+    process.env.CLAUDE_PROXY_CREDENTIALS_PATH = credentialsPath
+    process.env.ANTHROPIC_CLI_VERSION = "9.9.9"
+    process.env.CLAUDE_PROXY_OFFICIAL_CAPTURE_RAW_PATH = officialCapturePath
+    process.env.CLAUDE_PROXY_SYSTEM_MODE = "hermes-minimal"
+    delete process.env.ANTHROPIC_BETA_FLAGS
+    delete process.env.ANTHROPIC_ENABLE_1M_CONTEXT
+    delete process.env.ANTHROPIC_USER_AGENT
+
+    const credentials: ClaudeCredentials = {
+      claudeAiOauth: {
+        accessToken: "server-access",
+        refreshToken: "server-refresh",
+        expiresAt: Date.now() + 60 * 60 * 1000
+      }
+    }
+    writeCredentialsFile(credentials, credentialsPath)
+    writeFileSync(officialCapturePath, JSON.stringify({
+      schemaVersion: 1,
+      capturedAt: "2026-04-13T11:29:40.428Z",
+      runtime: {
+        transport: "fetch"
+      },
+      request: {
+        url: "https://api.anthropic.com/v1/messages?beta=true",
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "user-agent": "claude-cli/2.1.104 (external, sdk-cli)",
+          "x-app": "cli"
+        },
+        body: JSON.stringify({
+          model: "claude-opus-4-6",
+          messages: [{ role: "user", content: [{ type: "text", text: "Official prompt wrapper" }] }],
+          system: [
+            { type: "text", text: "x-anthropic-billing-header: old" },
+            { type: "text", text: SYSTEM_IDENTITY },
+            { type: "text", text: "Official scaffold A" }
+          ],
+          stream: true
+        })
+      }
+    }, null, 2), "utf-8")
+
+    let seenBody = ""
+    globalThis.fetch = (async (_input, init) => {
+      seenBody = String(init?.body ?? "")
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
+      })
+    }) as typeof fetch
+
+    resetResolvedClaudeCodeVersion()
+    const { app } = createProxyServer()
+    const response = await app.request("http://localhost/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-6",
+        stream: true,
+        system: "Stay helpful",
+        messages: [{ role: "user", content: "hello world" }],
+        tools: [
+          {
+            name: "bash",
+            description: "Run bash",
+            input_schema: { type: "object" }
+          },
+          {
+            name: "github__list_issues",
+            description: "List issues",
+            input_schema: { type: "object" }
+          },
+          {
+            name: "question",
+            description: "Ask a question",
+            input_schema: { type: "object" }
+          }
+        ]
+      })
+    })
+
+    const forwarded = JSON.parse(seenBody) as {
+      system: Array<{ text?: string }>
+      tools: Array<{ name?: string }>
+      messages: Array<{ content?: Array<{ type?: string; text?: string }> }>
+    }
+
+    expect(response.status).toBe(200)
+    expect(forwarded.system).toHaveLength(2)
+    expect(forwarded.system[0]?.text?.startsWith("x-anthropic-billing-header: ")).toBe(true)
+    expect(forwarded.system[1]?.text).toBe(SYSTEM_IDENTITY)
+    expect(forwarded.tools.map((tool) => tool.name)).toEqual([
+      "Bash",
+      "mcp__github__list_issues"
+    ])
+    expect(forwarded.messages[0]?.content).toEqual([
+      {
+        type: "text",
+        text: "<system-reminder>\nStay helpful\n</system-reminder>\n\nhello world"
+      }
+    ])
   })
 })

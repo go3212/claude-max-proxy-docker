@@ -73,10 +73,13 @@ function createProxyFixture(): CapturedRequestFixture {
     proxy: {
       claudeCodeVersion: "2.1.104",
       entrypoint: "cli",
+      systemMode: "official",
       modelId: "claude-opus-4-6",
       stream: true,
       transformed: true,
       betas: ["claude-code-20250219", "oauth-2025-04-20"],
+      mappedTools: [],
+      unsupportedToolNames: [],
       summary: {
         movedSystemTextCount: 1,
         hadFirstUserMessage: true,

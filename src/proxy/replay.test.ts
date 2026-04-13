@@ -88,10 +88,13 @@ describe("replay validation", () => {
       }),
       claudeCodeVersion: "2.1.104",
       entrypoint: "cli",
+      systemMode: "official",
       modelId: "claude-sonnet-4-5-20250929",
       stream: true,
       transformed: true,
       betas: ["prompt-caching-scope-2026-01-05"],
+      mappedTools: [{ openName: "bash", officialName: "Bash" }],
+      unsupportedToolNames: [],
       summary: {
         movedSystemTextCount: 1,
         hadFirstUserMessage: true,

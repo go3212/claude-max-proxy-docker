@@ -28,6 +28,31 @@ function reverseNameMap(): Record<string, string> {
 
 const OFFICIAL_TO_OPEN_NAME = reverseNameMap()
 
+function resolveOfficialToolName(openName: string): string | null {
+  const lower = openName.toLowerCase()
+  if (OPEN_TO_OFFICIAL_NAME[lower]) {
+    return OPEN_TO_OFFICIAL_NAME[lower]
+  }
+
+  if (OFFICIAL_TO_OPEN_NAME[openName]) {
+    return openName
+  }
+
+  if (openName.startsWith("mcp__")) {
+    return openName
+  }
+
+  if (openName.startsWith("mcp_")) {
+    return `mcp__${openName.slice(4)}`
+  }
+
+  if (openName.includes("__")) {
+    return `mcp__${openName}`
+  }
+
+  return null
+}
+
 function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
@@ -39,10 +64,6 @@ function mapToolBlockNamesInMessages(
 ): void {
   if (!Array.isArray(messages)) return
 
-  const lookup = direction === "open-to-official"
-    ? OPEN_TO_OFFICIAL_NAME
-    : officialToOpen
-
   for (const message of messages) {
     if (!message || typeof message !== "object" || Array.isArray(message)) continue
     const typedMessage = message as Record<string, unknown>
@@ -53,7 +74,9 @@ function mapToolBlockNamesInMessages(
       const typedBlock = block as Record<string, unknown>
       if (typedBlock.type !== "tool_use" || typeof typedBlock.name !== "string") continue
 
-      const mappedName = lookup[typedBlock.name]
+      const mappedName = direction === "open-to-official"
+        ? resolveOfficialToolName(typedBlock.name)
+        : officialToOpen[typedBlock.name]
       if (mappedName) {
         typedBlock.name = mappedName
       }
@@ -63,7 +86,6 @@ function mapToolBlockNamesInMessages(
 
 export function applyRequestToolBridge(
   body: Record<string, unknown>,
-  officialToolTemplates: Map<string, Record<string, unknown>>,
   mode: UnsupportedToolMode
 ): ToolBridgeResult {
   const incomingTools = Array.isArray(body.tools) ? body.tools : []
@@ -80,16 +102,11 @@ export function applyRequestToolBridge(
 
     const typedTool = cloneValue(tool as Record<string, unknown>)
     const openName = typeof typedTool.name === "string" ? typedTool.name : ""
-    const officialName = OPEN_TO_OFFICIAL_NAME[openName.toLowerCase()]
+    const officialName = resolveOfficialToolName(openName)
 
     if (officialName) {
       mappedToolNames.push({ openName, officialName })
       officialToOpenNames[officialName] = openName
-
-      const officialTemplate = officialToolTemplates.get(officialName.toLowerCase())
-      if (officialTemplate?.description !== undefined) {
-        typedTool.description = officialTemplate.description
-      }
       typedTool.name = officialName
       outgoingTools.push(typedTool)
       continue
@@ -108,7 +125,7 @@ export function applyRequestToolBridge(
   if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
     const typedChoice = body.tool_choice as Record<string, unknown>
     if (typedChoice.type === "tool" && typeof typedChoice.name === "string") {
-      const officialName = OPEN_TO_OFFICIAL_NAME[typedChoice.name.toLowerCase()]
+      const officialName = resolveOfficialToolName(typedChoice.name)
       if (officialName) {
         typedChoice.name = officialName
       } else if (mode === "drop") {
