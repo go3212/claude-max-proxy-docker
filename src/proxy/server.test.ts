@@ -606,6 +606,26 @@ describe("server", () => {
             input_schema: { type: "object" }
           },
           {
+            name: "question",
+            description: "Ask a question",
+            input_schema: { type: "object" }
+          },
+          {
+            name: "webfetch",
+            description: "Fetch a URL",
+            input_schema: { type: "object" }
+          },
+          {
+            name: "todowrite",
+            description: "Write todos",
+            input_schema: { type: "object" }
+          },
+          {
+            name: "get_environment",
+            description: "Get environment",
+            input_schema: { type: "object" }
+          },
+          {
             name: "__environment_get_environment",
             description: "Read environment",
             input_schema: { type: "object" }
@@ -615,11 +635,6 @@ describe("server", () => {
             description: "Validation preview",
             input_schema: { type: "object" }
           },
-          {
-            name: "webfetch",
-            description: "Fetch a URL",
-            input_schema: { type: "object" }
-          }
         ]
       })
     })
@@ -636,6 +651,10 @@ describe("server", () => {
     expect(forwarded.system[1]?.text).toBe(SYSTEM_IDENTITY)
     expect(forwarded.tools.map((tool) => tool.name)).toEqual([
       "Bash",
+      "mcp__local__question",
+      "mcp__local__webfetch",
+      "mcp__local__todowrite",
+      "mcp__environment__get_environment",
       "mcp__environment__get_environment",
       "mcp__975393dc_1af9a18e__validation_preview"
     ])

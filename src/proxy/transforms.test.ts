@@ -302,7 +302,7 @@ describe("transforms", () => {
     ])
   })
 
-  test("drops unsupported tools and normalizes MCP names in hermes-minimal mode", () => {
+  test("normalizes plain tools to local MCP names in hermes-minimal mode", () => {
     const result = transformBodyString(JSON.stringify({
       model: "claude-opus-4-6",
       messages: [{ role: "user", content: "hello world" }],
@@ -315,6 +315,21 @@ describe("transforms", () => {
         {
           name: "question",
           description: "Ask a question",
+          input_schema: { type: "object" }
+        },
+        {
+          name: "webfetch",
+          description: "Fetch a URL",
+          input_schema: { type: "object" }
+        },
+        {
+          name: "todowrite",
+          description: "Write todos",
+          input_schema: { type: "object" }
+        },
+        {
+          name: "get_environment",
+          description: "Get environment",
           input_schema: { type: "object" }
         },
         {
@@ -336,11 +351,31 @@ describe("transforms", () => {
     const transformed = JSON.parse(result.body) as { tools: Array<{ name?: string }> }
     expect(transformed.tools.map((tool) => tool.name)).toEqual([
       "Bash",
+      "mcp__local__question",
+      "mcp__local__webfetch",
+      "mcp__local__todowrite",
+      "mcp__environment__get_environment",
       "mcp__environment__get_environment",
       "mcp__975393dc_1af9a18e__validation_preview"
     ])
     expect(result.toolBridge.mappedToolNames).toEqual([
       { openName: "bash", officialName: "Bash" },
+      {
+        openName: "question",
+        officialName: "mcp__local__question"
+      },
+      {
+        openName: "webfetch",
+        officialName: "mcp__local__webfetch"
+      },
+      {
+        openName: "todowrite",
+        officialName: "mcp__local__todowrite"
+      },
+      {
+        openName: "get_environment",
+        officialName: "mcp__environment__get_environment"
+      },
       {
         openName: "__environment_get_environment",
         officialName: "mcp__environment__get_environment"
@@ -350,6 +385,6 @@ describe("transforms", () => {
         officialName: "mcp__975393dc_1af9a18e__validation_preview"
       }
     ])
-    expect(result.toolBridge.unsupportedToolNames).toEqual(["question"])
+    expect(result.toolBridge.unsupportedToolNames).toEqual([])
   })
 })

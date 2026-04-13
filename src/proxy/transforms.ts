@@ -362,7 +362,8 @@ export function applyClaudeCodeRequestTransforms(
 
   const toolBridge = applyRequestToolBridge(
     outgoing as Record<string, unknown>,
-    unsupportedToolMode
+    unsupportedToolMode,
+    systemMode
   )
 
   if (!toolBridge.hasTools) {

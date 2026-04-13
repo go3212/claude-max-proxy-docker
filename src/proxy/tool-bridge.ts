@@ -1,3 +1,5 @@
+import type { ClaudeProxySystemMode } from "./system-mode"
+
 export interface ToolBridgeResult {
   mappedToolNames: Array<{ openName: string; officialName: string }>
   officialToOpenNames: Record<string, string>
@@ -16,6 +18,10 @@ const OPEN_TO_OFFICIAL_NAME: Record<string, string> = {
   read: "Read",
   write: "Write",
   skill: "Skill"
+}
+
+const OPEN_TO_MCP_ALIAS_NAME: Record<string, string> = {
+  get_environment: "mcp__environment__get_environment"
 }
 
 function reverseNameMap(): Record<string, string> {
@@ -63,10 +69,24 @@ function normalizeImplicitMcpToolName(openName: string): string | null {
   return null
 }
 
-function resolveOfficialToolName(openName: string): string | null {
+function normalizeSyntheticLocalMcpToolName(openName: string): string | null {
+  const normalizedName = openName.trim().replace(/^_+|_+$/g, "")
+  if (!normalizedName) return null
+  if (!/^[A-Za-z0-9_-]+$/.test(normalizedName)) return null
+  return buildMcpToolName("local", normalizedName)
+}
+
+function resolveOfficialToolName(
+  openName: string,
+  systemMode: ClaudeProxySystemMode = "official"
+): string | null {
   const lower = openName.toLowerCase()
   if (OPEN_TO_OFFICIAL_NAME[lower]) {
     return OPEN_TO_OFFICIAL_NAME[lower]
+  }
+
+  if (OPEN_TO_MCP_ALIAS_NAME[lower]) {
+    return OPEN_TO_MCP_ALIAS_NAME[lower]
   }
 
   if (OFFICIAL_TO_OPEN_NAME[openName]) {
@@ -93,7 +113,16 @@ function resolveOfficialToolName(openName: string): string | null {
     return suffix ? `mcp__${suffix}` : null
   }
 
-  return normalizeImplicitMcpToolName(openName)
+  const normalizedImplicitName = normalizeImplicitMcpToolName(openName)
+  if (normalizedImplicitName) {
+    return normalizedImplicitName
+  }
+
+  if (systemMode === "hermes-minimal") {
+    return normalizeSyntheticLocalMcpToolName(openName)
+  }
+
+  return null
 }
 
 function cloneValue<T>(value: T): T {
@@ -103,7 +132,8 @@ function cloneValue<T>(value: T): T {
 function mapToolBlockNamesInMessages(
   messages: unknown,
   officialToOpen: Record<string, string>,
-  direction: "open-to-official" | "official-to-open"
+  direction: "open-to-official" | "official-to-open",
+  systemMode: ClaudeProxySystemMode = "official"
 ): void {
   if (!Array.isArray(messages)) return
 
@@ -118,7 +148,7 @@ function mapToolBlockNamesInMessages(
       if (typedBlock.type !== "tool_use" || typeof typedBlock.name !== "string") continue
 
       const mappedName = direction === "open-to-official"
-        ? resolveOfficialToolName(typedBlock.name)
+        ? resolveOfficialToolName(typedBlock.name, systemMode)
         : officialToOpen[typedBlock.name]
       if (mappedName) {
         typedBlock.name = mappedName
@@ -129,7 +159,8 @@ function mapToolBlockNamesInMessages(
 
 export function applyRequestToolBridge(
   body: Record<string, unknown>,
-  mode: UnsupportedToolMode
+  mode: UnsupportedToolMode,
+  systemMode: ClaudeProxySystemMode = "official"
 ): ToolBridgeResult {
   const incomingTools = Array.isArray(body.tools) ? body.tools : []
   const outgoingTools: unknown[] = []
@@ -145,7 +176,7 @@ export function applyRequestToolBridge(
 
     const typedTool = cloneValue(tool as Record<string, unknown>)
     const openName = typeof typedTool.name === "string" ? typedTool.name : ""
-    const officialName = resolveOfficialToolName(openName)
+    const officialName = resolveOfficialToolName(openName, systemMode)
 
     if (officialName) {
       mappedToolNames.push({ openName, officialName })
@@ -168,7 +199,7 @@ export function applyRequestToolBridge(
   if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
     const typedChoice = body.tool_choice as Record<string, unknown>
     if (typedChoice.type === "tool" && typeof typedChoice.name === "string") {
-      const officialName = resolveOfficialToolName(typedChoice.name)
+      const officialName = resolveOfficialToolName(typedChoice.name, systemMode)
       if (officialName) {
         typedChoice.name = officialName
       } else if (mode === "drop") {
@@ -177,7 +208,12 @@ export function applyRequestToolBridge(
     }
   }
 
-  mapToolBlockNamesInMessages(body.messages, OFFICIAL_TO_OPEN_NAME, "open-to-official")
+  mapToolBlockNamesInMessages(
+    body.messages,
+    OFFICIAL_TO_OPEN_NAME,
+    "open-to-official",
+    systemMode
+  )
 
   return {
     mappedToolNames,
