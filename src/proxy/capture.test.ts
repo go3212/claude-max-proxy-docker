@@ -13,6 +13,9 @@ describe("capture", () => {
   test("sanitizes prompt text, tokens, and binary payloads while preserving request structure", () => {
     const body = sanitizeIncomingRequestBody(JSON.stringify({
       model: "claude-sonnet-4-5-20250929",
+      output_config: {
+        effort: "high"
+      },
       system: "Stay helpful",
       messages: [
         {
@@ -29,13 +32,18 @@ describe("capture", () => {
           name: "search_docs",
           description: "Search the private docs",
           input_schema: {
+            $schema: "https://json-schema.org/draft/2020-12/schema",
             type: "object",
             properties: {
               query: {
                 type: "string",
                 description: "A private user query"
               }
-            }
+            },
+            required: ["query"],
+            additionalProperties: false,
+            default: "unused",
+            enum: ["one", "two"]
           }
         }
       ],
@@ -51,12 +59,14 @@ describe("capture", () => {
 
     const typed = body as {
       model: string
+      output_config: { effort: string }
       system: string
       messages: Array<{ role: string; content: Array<{ type?: string; source?: { data?: string }; id?: string; name?: string }> }>
-      tools: Array<{ name: string; input_schema: { properties: { query: { type: string } } } }>
+      tools: Array<{ name: string; input_schema: { $schema: string; properties: { query: { type: string } }; required: string[]; default: string; enum: string[] } }>
     }
 
     expect(typed.model).toBe("claude-sonnet-4-5-20250929")
+    expect(typed.output_config.effort).toBe("high")
     expect(typed.system).toMatch(/\[redacted-system-1\]/)
     expect(typed.messages[0]?.role).toBe("user")
     expect(typed.messages[0]?.content[0]?.type).toBe("image")
@@ -64,10 +74,14 @@ describe("capture", () => {
     expect(typed.messages[0]?.content[2]?.id).toBe("toolu_123")
     expect(typed.messages[0]?.content[2]?.name).toBe("search_docs")
     expect(typed.tools[0]?.name).toBe("search_docs")
+    expect(typed.tools[0]?.input_schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema")
     expect(typed.tools[0]?.input_schema.properties.query.type).toBe("string")
+    expect(typed.tools[0]?.input_schema.required).toEqual(["query"])
+    expect(typed.tools[0]?.input_schema.default).toBe("unused")
+    expect(typed.tools[0]?.input_schema.enum).toEqual(["one", "two"])
   })
 
-  test("builds and reloads a redacted fixture with sanitized headers and transform metadata", async () => {
+  test("builds and reloads a redacted fixture with sanitized headers and outbound metadata", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "claude-max-proxy-capture-"))
     const capturePath = join(tempDir, "latest-request.json")
 
@@ -96,7 +110,14 @@ describe("capture", () => {
         hadFirstUserTextBlock: true,
         finalSystemTextCount: 2,
         textSystemReducedToCoreOnly: true
-      }
+      },
+      outgoingHeaders: new Headers({
+        authorization: "Bearer secret",
+        "anthropic-beta": "prompt-caching-scope-2026-01-05",
+        "x-app": "cli"
+      }),
+      droppedIncomingHeaders: ["x-session-affinity"],
+      droppedIncomingBetas: ["structured-outputs-2025-11-13"]
     })
 
     await writeCapturedRequestFixture(capturePath, fixture)
@@ -107,5 +128,9 @@ describe("capture", () => {
     expect(JSON.stringify(reloaded.request.body)).not.toContain("hello world")
     expect(reloaded.proxy.summary.textSystemReducedToCoreOnly).toBe(true)
     expect(reloaded.proxy.betas).toEqual(["prompt-caching-scope-2026-01-05"])
+    expect(reloaded.proxy.outboundRequest.headers.authorization).toBe("[redacted-header-1]")
+    expect(reloaded.proxy.outboundRequest.headers["x-app"]).toBe("cli")
+    expect(reloaded.proxy.outboundRequest.droppedIncomingHeaders).toEqual(["x-session-affinity"])
+    expect(reloaded.proxy.outboundRequest.droppedIncomingBetas).toEqual(["structured-outputs-2025-11-13"])
   })
 })

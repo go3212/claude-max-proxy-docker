@@ -8,6 +8,7 @@ const SENSITIVE_HEADER_NAMES = new Set([
   "cookie",
   "proxy-authorization",
   "set-cookie",
+  "x-session-affinity",
   "x-api-key"
 ])
 const SENSITIVE_KEY_FRAGMENTS = [
@@ -53,6 +54,11 @@ export interface CapturedRequestFixture {
     transformed: boolean
     betas: string[]
     summary: TransformSummary
+    outboundRequest: {
+      headers: Record<string, string>
+      droppedIncomingHeaders: string[]
+      droppedIncomingBetas: string[]
+    }
   }
 }
 
@@ -68,6 +74,9 @@ export interface BuildCaptureFixtureOptions {
   transformed: boolean
   betas: string[]
   summary: TransformSummary
+  outgoingHeaders: Headers
+  droppedIncomingHeaders: string[]
+  droppedIncomingBetas: string[]
 }
 
 function createRedactionState(): RedactionState {
@@ -131,9 +140,20 @@ function sanitizeByKey(
     lower === "type" ||
     lower === "name" ||
     lower === "id" ||
+    lower === "default" ||
+    lower === "effort" ||
+    lower === "format" ||
     lower === "media_type" ||
-    lower === "mime_type"
+    lower === "mime_type" ||
+    lower === "pattern" ||
+    lower === "ref" ||
+    lower === "$ref" ||
+    lower === "$schema"
   ) {
+    return value
+  }
+
+  if (lower === "required" || lower === "enum") {
     return value
   }
 
@@ -334,7 +354,12 @@ export function buildCapturedRequestFixture(
       stream: options.stream,
       transformed: options.transformed,
       betas: [...options.betas],
-      summary: { ...options.summary }
+      summary: { ...options.summary },
+      outboundRequest: {
+        headers: sanitizeHeaders(options.outgoingHeaders),
+        droppedIncomingHeaders: [...options.droppedIncomingHeaders],
+        droppedIncomingBetas: [...options.droppedIncomingBetas]
+      }
     }
   }
 }

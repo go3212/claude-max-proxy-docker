@@ -56,17 +56,38 @@ describe("replay validation", () => {
       path: "/messages",
       headers: new Headers({
         "content-type": "application/json",
-        "anthropic-beta": "client-beta"
+        "anthropic-beta": "client-beta,structured-outputs-2025-11-13",
+        "x-session-affinity": "ses_123"
       }),
       rawBody: JSON.stringify({
         model: "claude-sonnet-4-5-20250929",
+        stream: true,
+        tool_choice: {
+          type: "auto"
+        },
         system: "Stay helpful",
-        messages: [{ role: "user", content: "hello world" }]
+        messages: [{ role: "user", content: "hello world" }],
+        tools: [
+          {
+            name: "bash",
+            description: "Run bash",
+            input_schema: {
+              type: "object",
+              properties: {
+                command: {
+                  type: "string"
+                }
+              },
+              required: ["command"],
+              additionalProperties: false
+            }
+          }
+        ]
       }),
       claudeCodeVersion: "2.1.104",
       entrypoint: "cli",
       modelId: "claude-sonnet-4-5-20250929",
-      stream: false,
+      stream: true,
       transformed: true,
       betas: ["prompt-caching-scope-2026-01-05"],
       summary: {
@@ -75,7 +96,14 @@ describe("replay validation", () => {
         hadFirstUserTextBlock: true,
         finalSystemTextCount: 2,
         textSystemReducedToCoreOnly: true
-      }
+      },
+      outgoingHeaders: new Headers({
+        authorization: "Bearer secret",
+        "anthropic-beta": "prompt-caching-scope-2026-01-05",
+        "x-app": "cli"
+      }),
+      droppedIncomingHeaders: ["x-session-affinity"],
+      droppedIncomingBetas: ["client-beta", "structured-outputs-2025-11-13"]
     })
     await writeCapturedRequestFixture(capturePath, fixture)
 

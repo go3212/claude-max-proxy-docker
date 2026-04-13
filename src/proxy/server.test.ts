@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, mock, test } from "bun:test"
 import { mkdtempSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -10,6 +10,7 @@ import { resetResolvedClaudeCodeVersion } from "./version"
 const originalCredentialsPath = process.env.CLAUDE_PROXY_CREDENTIALS_PATH
 const originalCliVersion = process.env.ANTHROPIC_CLI_VERSION
 const originalCapturePath = process.env.CLAUDE_PROXY_CAPTURE_PATH
+const originalProxyDebug = process.env.CLAUDE_PROXY_DEBUG
 const originalFetch = globalThis.fetch
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -24,6 +25,7 @@ afterEach(() => {
   restoreEnv("CLAUDE_PROXY_CREDENTIALS_PATH", originalCredentialsPath)
   restoreEnv("ANTHROPIC_CLI_VERSION", originalCliVersion)
   restoreEnv("CLAUDE_PROXY_CAPTURE_PATH", originalCapturePath)
+  restoreEnv("CLAUDE_PROXY_DEBUG", originalProxyDebug)
   globalThis.fetch = originalFetch
   resetCredentialCache()
   resetResolvedClaudeCodeVersion()
@@ -71,8 +73,10 @@ describe("server", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "anthropic-beta": "client-beta",
-        "x-api-key": "dummy"
+        "anthropic-beta": "client-beta,structured-outputs-2025-11-13",
+        "x-api-key": "dummy",
+        "x-session-affinity": "ses_123",
+        accept: "*/*"
       },
       body: JSON.stringify({
         model: "claude-opus-4-6-20260101",
@@ -91,8 +95,11 @@ describe("server", () => {
     expect(seenUrl).toBe("https://api.anthropic.com/v1/messages")
     expect(seenHeaders.get("authorization")).toBe("Bearer server-access")
     expect(seenHeaders.get("user-agent")).toBe("claude-cli/9.9.9 (external, cli)")
-    expect(seenHeaders.get("anthropic-beta")).toContain("client-beta")
+    expect(seenHeaders.get("anthropic-beta")).not.toContain("client-beta")
+    expect(seenHeaders.get("anthropic-beta")).not.toContain("structured-outputs-2025-11-13")
     expect(seenHeaders.get("anthropic-beta")).toContain("prompt-caching-scope-2026-01-05")
+    expect(seenHeaders.get("x-session-affinity")).toBeNull()
+    expect(seenHeaders.get("accept")).toBeNull()
     expect(seenHeaders.get("x-api-key")).toBeNull()
 
     const forwarded = JSON.parse(seenBody) as {
@@ -113,21 +120,101 @@ describe("server", () => {
 
     const captured = JSON.parse(readFileSync(capturePath, "utf-8")) as {
       request: {
+        headers: Record<string, string>
         body: {
           system: string
           messages: Array<{ role: string; content: string }>
         }
       }
       proxy: {
+        outboundRequest: {
+          headers: Record<string, string>
+          droppedIncomingHeaders: string[]
+          droppedIncomingBetas: string[]
+        }
         summary: {
           textSystemReducedToCoreOnly: boolean
         }
       }
     }
+    expect(captured.request.headers["x-session-affinity"]).toMatch(/\[redacted-header-\d+\]/)
     expect(captured.request.body.system).toMatch(/\[redacted-system-1\]/)
     expect(JSON.stringify(captured.request.body)).not.toContain("x-anthropic-billing-header")
     expect(captured.request.body.messages[0]?.role).toBe("user")
     expect(captured.request.body.messages[0]?.content).toMatch(/\[redacted-user-1\]/)
+    expect(captured.proxy.outboundRequest.headers.authorization).toBe("[redacted-header-1]")
+    expect(captured.proxy.outboundRequest.headers["x-app"]).toBe("cli")
+    expect(captured.proxy.outboundRequest.droppedIncomingHeaders).toContain("x-session-affinity")
+    expect(captured.proxy.outboundRequest.droppedIncomingBetas).toEqual([
+      "client-beta",
+      "structured-outputs-2025-11-13"
+    ])
     expect(captured.proxy.summary.textSystemReducedToCoreOnly).toBe(true)
+  })
+
+  test("summarizes streamed upstream errors in debug logs", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "claude-max-proxy-stream-error-"))
+    const credentialsPath = join(tempDir, "credentials.json")
+    process.env.CLAUDE_PROXY_CREDENTIALS_PATH = credentialsPath
+    process.env.ANTHROPIC_CLI_VERSION = "9.9.9"
+    process.env.CLAUDE_PROXY_DEBUG = "1"
+
+    const credentials: ClaudeCredentials = {
+      claudeAiOauth: {
+        accessToken: "server-access",
+        refreshToken: "server-refresh",
+        expiresAt: Date.now() + 60 * 60 * 1000
+      }
+    }
+    writeCredentialsFile(credentials, credentialsPath)
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: {
+        message:
+          "Third-party apps now draw from your extra usage, not your plan limits. " +
+          "We've added a $200 credit to get you started. Claim it at claude.ai/settings/usage and keep going."
+      }
+    }), {
+      status: 400,
+      headers: {
+        "content-type": "application/json"
+      }
+    })) as unknown as typeof fetch
+
+    const logMessages: string[] = []
+    const debug = mock((message?: unknown) => {
+      logMessages.push(String(message ?? ""))
+    })
+    const originalDebug = console.debug
+    console.debug = debug
+
+    try {
+      resetResolvedClaudeCodeVersion()
+      const { app } = createProxyServer()
+      const response = await app.request("http://localhost/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "claude-opus-4-6",
+          stream: true,
+          messages: [
+            {
+              role: "user",
+              content: "hello world"
+            }
+          ]
+        })
+      })
+
+      expect(response.status).toBe(400)
+      const logLines = logMessages.join("\n")
+      expect(logLines).toContain("proxy.response")
+      expect(logLines).toContain("thirdPartyUsageDetected")
+      expect(logLines).toContain("Third-party apps now draw")
+    } finally {
+      console.debug = originalDebug
+    }
   })
 })

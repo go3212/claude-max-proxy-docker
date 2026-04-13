@@ -9,7 +9,7 @@ import {
   writeCapturedRequestFixture
 } from "./capture"
 import { getValidCredentials } from "./credentials"
-import { buildRequestHeaders } from "./headers"
+import { prepareRequestHeaders } from "./headers"
 import { transformBodyString } from "./transforms"
 import { summarizeAnthropicResponse } from "./validation"
 import { resolveClaudeCodeVersion } from "./version"
@@ -70,16 +70,13 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         transformed: transformedBody.transformed
       })
 
-      const captureHeaders = buildRequestHeaders(
+      const credentials = await getValidCredentials()
+      const headerBuild = prepareRequestHeaders(
         c.req.raw.headers,
-        "[capture-redacted-access-token]",
+        credentials.claudeAiOauth.accessToken,
         transformedBody.modelId,
         claudeCodeVersion
       )
-      const captureBetas = (captureHeaders.get("anthropic-beta") ?? "")
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean)
 
       if (capturePath) {
         const fixture = buildCapturedRequestFixture({
@@ -92,8 +89,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
           modelId: transformedBody.modelId,
           stream: transformedBody.stream,
           transformed: transformedBody.transformed,
-          betas: captureBetas,
-          summary: transformedBody.summary
+          betas: headerBuild.betas,
+          summary: transformedBody.summary,
+          outgoingHeaders: headerBuild.headers,
+          droppedIncomingHeaders: headerBuild.droppedIncomingHeaders,
+          droppedIncomingBetas: headerBuild.droppedIncomingBetas
         })
 
         try {
@@ -111,41 +111,33 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}) {
         }
       }
 
-      const credentials = await getValidCredentials()
-
-      const headers = buildRequestHeaders(
-        c.req.raw.headers,
-        credentials.claudeAiOauth.accessToken,
-        transformedBody.modelId,
-        claudeCodeVersion
-      )
-      headers.set("content-type", "application/json")
-
       claudeLog("proxy.request.shape", {
         modelId: transformedBody.modelId,
         version: claudeCodeVersion,
         entrypoint: claudeCodeEntrypoint,
-        betas: (headers.get("anthropic-beta") ?? "")
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
+        betas: headerBuild.betas,
+        droppedIncomingBetas: headerBuild.droppedIncomingBetas,
+        droppedIncomingHeaders: headerBuild.droppedIncomingHeaders,
+        outboundHeaders: headerBuild.debugHeaders,
         ...transformedBody.summary
       })
 
       const upstream = await fetch(ANTHROPIC_API_URL, {
         method: "POST",
-        headers,
+        headers: headerBuild.headers,
         body: transformedBody.body
       })
-      const validationSummary = transformedBody.stream
-        ? null
-        : summarizeAnthropicResponse(await upstream.clone().text())
+      const shouldSummarizeResponse = !upstream.ok || !transformedBody.stream
+      const validationSummary = shouldSummarizeResponse
+        ? summarizeAnthropicResponse(await upstream.clone().text())
+        : null
 
       claudeLog("proxy.response", {
         status: upstream.status,
         modelId: transformedBody.modelId,
         thirdPartyUsageDetected: validationSummary?.isThirdPartyUsage ?? false,
-        errorMessage: validationSummary?.errorMessage ?? null
+        errorMessage: validationSummary?.errorMessage ?? null,
+        message: validationSummary?.message ?? null
       })
 
       return new Response(upstream.body, {
