@@ -111,10 +111,15 @@ describe("transforms", () => {
     expect(transformed.messages?.[0]?.content).toEqual([
       {
         type: "text",
-        text:
-          "<system-reminder>\nStay helpful.\n</system-reminder>\n\n" +
-          "<system-reminder>\nExtra system guidance\n</system-reminder>\n\n" +
-          "hello world"
+        text: "<system-reminder>\nStay helpful.\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "<system-reminder>\nExtra system guidance\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "hello world"
       }
     ])
     expect(transformed.temperature).toBeUndefined()
@@ -142,8 +147,11 @@ describe("transforms", () => {
     expect(transformed.messages?.[0]?.content).toEqual([
       {
         type: "text",
-        text:
-          "<system-reminder>\nplain system\n</system-reminder>\n\nhello world"
+        text: "<system-reminder>\nplain system\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "hello world"
       }
     ])
   })
@@ -167,10 +175,53 @@ describe("transforms", () => {
 
     const content = transformed.messages?.[0]?.content
     expect(Array.isArray(content)).toBe(true)
-    expect((content as Array<{ type?: string }>)[0]?.type).toBe("image")
-    expect((content as Array<{ type?: string; text?: string }>)[1]?.text).toBe(
-      "<system-reminder>\nplain system\n</system-reminder>\n\nhello world"
+    expect((content as Array<{ type?: string; text?: string }>)[0]?.text).toBe(
+      "<system-reminder>\nplain system\n</system-reminder>"
     )
+    expect((content as Array<{ type?: string }>)[1]?.type).toBe("image")
+    expect((content as Array<{ type?: string; text?: string }>)[2]?.text).toBe("hello world")
+  })
+
+  test("preserves cache_control per moved system block", () => {
+    const transformed = applyClaudeCodeRequestTransforms({
+      system: [
+        {
+          type: "text",
+          text: "Cached reminder",
+          cache_control: {
+            type: "ephemeral",
+            ttl: "5m",
+            scope: "workspace"
+          }
+        },
+        {
+          type: "text",
+          text: "Uncached reminder"
+        }
+      ],
+      messages: [{ role: "user", content: "hello world" }],
+      model: "claude-sonnet-4-5-20250929"
+    }, createTransformOptions())
+
+    expect(transformed.messages?.[0]?.content).toEqual([
+      {
+        type: "text",
+        text: "<system-reminder>\nCached reminder\n</system-reminder>",
+        cache_control: {
+          type: "ephemeral",
+          ttl: "5m",
+          scope: "workspace"
+        }
+      },
+      {
+        type: "text",
+        text: "<system-reminder>\nUncached reminder\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "hello world"
+      }
+    ])
   })
 
   test("is idempotent for billing and identity entries", () => {
@@ -294,10 +345,15 @@ describe("transforms", () => {
     expect(transformed.messages?.[0]?.content).toEqual([
       {
         type: "text",
-        text:
-          "<system-reminder>\nStay helpful.\n</system-reminder>\n\n" +
-          "<system-reminder>\nExtra system guidance\n</system-reminder>\n\n" +
-          "hello world"
+        text: "<system-reminder>\nStay helpful.\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "<system-reminder>\nExtra system guidance\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "hello world"
       }
     ])
   })

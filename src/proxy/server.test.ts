@@ -218,7 +218,11 @@ describe("server", () => {
     expect(forwarded.messages[0]?.content).toEqual([
       {
         type: "text",
-        text: "<system-reminder>\nStay helpful\n</system-reminder>\n\nhello world"
+        text: "<system-reminder>\nStay helpful\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "hello world"
       }
     ])
     expect(forwarded.metadata?.user_id).toBe("official-user")
@@ -661,7 +665,11 @@ describe("server", () => {
     expect(forwarded.messages[0]?.content).toEqual([
       {
         type: "text",
-        text: "<system-reminder>\nStay helpful\n</system-reminder>\n\nhello world"
+        text: "<system-reminder>\nStay helpful\n</system-reminder>"
+      },
+      {
+        type: "text",
+        text: "hello world"
       }
     ])
   })

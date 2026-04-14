@@ -26,6 +26,7 @@ export interface SystemEntry {
 export interface ContentBlock {
   type?: string
   text?: string
+  cache_control?: unknown
   [key: string]: unknown
 }
 
@@ -75,6 +76,11 @@ export interface TransformResult {
   toolBridge: ToolBridgeResult
 }
 
+interface RelocatedSystemText {
+  text: string
+  cache_control?: unknown
+}
+
 const EMPTY_SUMMARY: TransformSummary = {
   movedSystemTextCount: 0,
   hadFirstUserMessage: false,
@@ -121,33 +127,47 @@ function stripAdaptiveTemperature(body: AnthropicRequestBody): void {
   delete body.temperature
 }
 
-function buildSystemReminderText(texts: string[]): string {
-  return texts
-    .map((text) => `<system-reminder>\n${text}\n</system-reminder>`)
-    .join("\n\n")
+function buildSystemReminderBlocks(entries: RelocatedSystemText[]): ContentBlock[] {
+  return entries.map((entry) => {
+    const block: ContentBlock = {
+      type: "text",
+      text: `<system-reminder>\n${entry.text}\n</system-reminder>`
+    }
+
+    if (entry.cache_control !== undefined) {
+      block.cache_control = cloneValue(entry.cache_control)
+    }
+
+    return block
+  })
 }
 
 function prependToFirstUserMessage(
   messages: AnthropicMessage[],
-  texts: string[]
+  entries: RelocatedSystemText[]
 ): Pick<TransformSummary, "hadFirstUserMessage" | "hadFirstUserTextBlock"> {
-  if (texts.length === 0) {
+  if (entries.length === 0) {
     return {
       hadFirstUserMessage: false,
       hadFirstUserTextBlock: false
     }
   }
 
-  const combined = buildSystemReminderText(texts)
+  const reminderBlocks = buildSystemReminderBlocks(entries)
 
   for (const message of messages) {
     if (message.role !== "user") continue
 
     if (typeof message.content === "string") {
-      message.content = [{
-        type: "text",
-        text: message.content ? `${combined}\n\n${message.content}` : combined
-      }]
+      message.content = message.content
+        ? [
+            ...reminderBlocks,
+            {
+              type: "text",
+              text: message.content
+            }
+          ]
+        : [...reminderBlocks]
       return {
         hadFirstUserMessage: true,
         hadFirstUserTextBlock: true
@@ -155,30 +175,17 @@ function prependToFirstUserMessage(
     }
 
     if (Array.isArray(message.content)) {
-      for (const block of message.content) {
-        if (block.type === "text" && typeof block.text === "string") {
-          block.text = block.text ? `${combined}\n\n${block.text}` : combined
-          return {
-            hadFirstUserMessage: true,
-            hadFirstUserTextBlock: true
-          }
-        }
-      }
-
-      message.content.unshift({
-        type: "text",
-        text: combined
-      })
+      const hadFirstUserTextBlock = message.content.some(
+        (block) => block.type === "text" && typeof block.text === "string"
+      )
+      message.content = [...reminderBlocks, ...message.content]
       return {
         hadFirstUserMessage: true,
-        hadFirstUserTextBlock: false
+        hadFirstUserTextBlock
       }
     }
 
-    message.content = [{
-      type: "text",
-      text: combined
-    }]
+    message.content = [...reminderBlocks]
     return {
       hadFirstUserMessage: true,
       hadFirstUserTextBlock: false
@@ -220,10 +227,10 @@ function extractIncomingSystem(
   scaffold: OfficialClaudeScaffold,
   systemMode: ClaudeProxySystemMode
 ): {
-  movedTexts: string[]
+  movedEntries: RelocatedSystemText[]
   preservedEntries: Array<SystemEntry | string>
 } {
-  const movedTexts: string[] = []
+  const movedEntries: RelocatedSystemText[] = []
   const preservedEntries: Array<SystemEntry | string> = []
   const scaffoldTextEntries = new Set(
     systemMode === "official"
@@ -238,7 +245,7 @@ function extractIncomingSystem(
       if (entry.startsWith(SYSTEM_IDENTITY)) {
         const remainder = entry.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
         if (remainder && !scaffoldTextEntries.has(remainder)) {
-          movedTexts.push(remainder)
+          movedEntries.push({ text: remainder })
         }
         continue
       }
@@ -246,7 +253,7 @@ function extractIncomingSystem(
         continue
       }
       if (entry && !entry.startsWith(BILLING_PREFIX)) {
-        movedTexts.push(entry)
+        movedEntries.push({ text: entry })
       }
       continue
     }
@@ -260,7 +267,10 @@ function extractIncomingSystem(
     if (text.startsWith(SYSTEM_IDENTITY)) {
       const remainder = text.slice(SYSTEM_IDENTITY.length).replace(/^\n+/, "")
       if (remainder && !scaffoldTextEntries.has(remainder)) {
-        movedTexts.push(remainder)
+        movedEntries.push({
+          text: remainder,
+          cache_control: entry.cache_control
+        })
       }
       continue
     }
@@ -268,12 +278,15 @@ function extractIncomingSystem(
       continue
     }
     if (text && !text.startsWith(BILLING_PREFIX)) {
-      movedTexts.push(text)
+      movedEntries.push({
+        text,
+        cache_control: entry.cache_control
+      })
     }
   }
 
   return {
-    movedTexts,
+    movedEntries,
     preservedEntries
   }
 }
@@ -386,7 +399,7 @@ export function applyClaudeCodeRequestTransforms(
     : buildScaffoldSystem(options.scaffold, billingText, extractedSystem.preservedEntries)
   const firstUserSummary = prependToFirstUserMessage(
     outgoing.messages ?? [],
-    extractedSystem.movedTexts
+    extractedSystem.movedEntries
   )
 
   const modelId = outgoing.model ?? ""
@@ -411,7 +424,7 @@ export function applyClaudeCodeRequestTransforms(
   stripAdaptiveTemperature(outgoing)
 
   ;(outgoing as AnthropicRequestBody & { __transformSummary__?: TransformSummary }).__transformSummary__ =
-    summarizeTransformedBody(outgoing, extractedSystem.movedTexts.length, firstUserSummary)
+    summarizeTransformedBody(outgoing, extractedSystem.movedEntries.length, firstUserSummary)
   ;(outgoing as AnthropicRequestBody & { __toolBridge__?: ToolBridgeResult }).__toolBridge__ =
     toolBridge
   return outgoing as AnthropicRequestBody & { __transformSummary__?: TransformSummary; __toolBridge__?: ToolBridgeResult }
